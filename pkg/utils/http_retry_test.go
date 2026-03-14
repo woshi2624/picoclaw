@@ -34,10 +34,10 @@ func TestDoRequestWithRetry(t *testing.T) {
 		{
 			name: "fail-all-attempts",
 			serverBehavior: func(server *httptest.Server) int {
-				return 4
+				return 6
 			},
 			wantSuccess:  false,
-			wantAttempts: 3,
+			wantAttempts: 5,
 		},
 	}
 

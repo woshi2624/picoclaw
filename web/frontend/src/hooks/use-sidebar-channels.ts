@@ -27,10 +27,10 @@ import {
 import { getChannelDisplayName } from "@/components/channels/channel-display-name"
 import { gatewayAtom } from "@/store/gateway"
 
-const DEFAULT_VISIBLE_CHANNELS = 5
+const DEFAULT_VISIBLE_CHANNELS = 3
 const CHANNEL_IMPORTANCE_ORDER = [
-  "discord",
   "feishu",
+  "discord",
   "telegram",
   "slack",
   "line",

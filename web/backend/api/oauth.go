@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"html"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -124,6 +126,8 @@ func (h *Handler) registerOAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/oauth/flows/{id}/poll", h.handlePollOAuthFlow)
 	mux.HandleFunc("POST /api/oauth/logout", h.handleOAuthLogout)
 	mux.HandleFunc("GET /oauth/callback", h.handleOAuthCallback)
+	// Also register /auth/callback to match the CLI redirect URI format used by OpenAI.
+	mux.HandleFunc("GET /auth/callback", h.handleOAuthCallback)
 }
 
 func (h *Handler) handleListOAuthProviders(w http.ResponseWriter, r *http.Request) {
@@ -285,7 +289,7 @@ func (h *Handler) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		redirectURI := buildOAuthRedirectURI(r)
+		redirectURI := buildOAuthRedirectURIForProvider(r, provider)
 		authURL := oauthBuildAuthorizeURL(cfg, pkce, state, redirectURI)
 
 		now := oauthNow()
@@ -302,6 +306,13 @@ func (h *Handler) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 			RedirectURI:  redirectURI,
 		}
 		h.storeOAuthFlow(flow)
+
+		// For OpenAI, the redirect URI points to localhost:1455 (the registered
+		// callback port for the Codex CLI client). Start a temporary HTTP server
+		// on that port so we can receive the callback.
+		if provider == oauthProviderOpenAI && cfg.Port > 0 {
+			h.startOAuthCallbackServer(cfg.Port, flow.ID)
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -515,7 +526,7 @@ func renderOAuthCallbackPage(w http.ResponseWriter, flowID, status, title, errMs
 
 	_, _ = fmt.Fprintf(
 		w,
-		"<!doctype html><html><head><meta charset=\"utf-8\"><title>PicoClaw OAuth</title></head><body><script>(function(){var payload=%s;var hasOpener=false;try{if(window.opener&&!window.opener.closed){window.opener.postMessage(payload,window.location.origin);hasOpener=true}}catch(e){}var target='/credentials?oauth_flow_id='+encodeURIComponent(payload.flowId||'')+'&oauth_status='+encodeURIComponent(payload.status||'');setTimeout(function(){if(hasOpener){window.close();return}window.location.replace(target)},800)})();</script><div style=\"font-family:Inter,system-ui,sans-serif;padding:24px\"><h2>%s</h2><p>%s</p><p>You can close this window.</p></div></body></html>",
+		"<!doctype html><html><head><meta charset=\"utf-8\"><title>PicoClaw OAuth</title></head><body><script>(function(){var payload=%s;var hasOpener=false;try{if(window.opener&&!window.opener.closed){window.opener.postMessage(payload,'*');hasOpener=true}}catch(e){}var target='/credentials?oauth_flow_id='+encodeURIComponent(payload.flowId||'')+'&oauth_status='+encodeURIComponent(payload.status||'');setTimeout(function(){if(hasOpener){window.close();return}window.location.replace(target)},800)})();</script><div style=\"font-family:Inter,system-ui,sans-serif;padding:24px\"><h2>%s</h2><p>%s</p><p>You can close this window.</p></div></body></html>",
 		string(payloadJSON),
 		html.EscapeString(title),
 		html.EscapeString(message),
@@ -527,6 +538,8 @@ func normalizeOAuthProvider(raw string) (string, error) {
 	switch provider {
 	case "antigravity":
 		return oauthProviderGoogleAntigravity, nil
+	case "openai-codex":
+		return oauthProviderOpenAI, nil
 	case oauthProviderOpenAI, oauthProviderAnthropic, oauthProviderGoogleAntigravity:
 		return provider, nil
 	default:
@@ -563,6 +576,17 @@ func oauthMethodTokenOrOAuth(method string) string {
 }
 
 func buildOAuthRedirectURI(r *http.Request) string {
+	return buildOAuthRedirectURIForProvider(r, "")
+}
+
+// buildOAuthRedirectURIForProvider constructs the redirect URI for the given provider.
+// OpenAI requires http://localhost:1455/auth/callback (matching the Codex CLI's registered
+// redirect URI), so we use a temporary callback server on that port.
+func buildOAuthRedirectURIForProvider(r *http.Request, provider string) string {
+	if provider == oauthProviderOpenAI {
+		cfg := auth.OpenAIOAuthConfig()
+		return fmt.Sprintf("http://localhost:%d/auth/callback", cfg.Port)
+	}
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
@@ -699,6 +723,55 @@ func (h *Handler) gcOAuthFlowsLocked(now time.Time) {
 	}
 }
 
+// startOAuthCallbackServer starts a temporary HTTP server on the given port to
+// receive the OAuth callback from the provider. This is needed because the OpenAI
+// Codex CLI client is registered with http://localhost:1455/auth/callback, and the
+// redirect_uri must match exactly. The server shuts down automatically once the
+// flow completes or expires.
+func (h *Handler) startOAuthCallbackServer(port int, flowID string) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth/callback", h.handleOAuthCallback)
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Printf("oauth: failed to start callback server on %s: %v", addr, err)
+		return
+	}
+
+	server := &http.Server{Handler: mux}
+
+	go func() {
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+			log.Printf("oauth: callback server error: %v", err)
+		}
+	}()
+
+	// Shut down when the flow completes or expires.
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		timeout := time.After(oauthBrowserFlowTTL + 10*time.Second)
+		for {
+			select {
+			case <-ticker.C:
+				f, ok := h.getOAuthFlow(flowID)
+				if !ok || f.Status != oauthFlowPending {
+					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+					server.Shutdown(ctx)
+					cancel()
+					return
+				}
+			case <-timeout:
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				server.Shutdown(ctx)
+				cancel()
+				return
+			}
+		}
+	}()
+}
+
 func (h *Handler) persistCredentialAndConfig(provider, authMethod string, cred *auth.AuthCredential) error {
 	if cred == nil {
 		return fmt.Errorf("empty credential")
@@ -774,7 +847,7 @@ func modelBelongsToProvider(provider, model string) bool {
 	lower := strings.ToLower(strings.TrimSpace(model))
 	switch provider {
 	case oauthProviderOpenAI:
-		return lower == "openai" || strings.HasPrefix(lower, "openai/")
+		return lower == "openai" || strings.HasPrefix(lower, "openai/") || strings.HasPrefix(lower, "openai-codex/")
 	case oauthProviderAnthropic:
 		return lower == "anthropic" || strings.HasPrefix(lower, "anthropic/")
 	case oauthProviderGoogleAntigravity:
@@ -791,8 +864,8 @@ func defaultModelConfigForProvider(provider, authMethod string) config.ModelConf
 	switch provider {
 	case oauthProviderOpenAI:
 		return config.ModelConfig{
-			ModelName:  "gpt-5.2",
-			Model:      "openai/gpt-5.2",
+			ModelName:  "gpt-5.4",
+			Model:      "openai-codex/gpt-5.4",
 			AuthMethod: authMethod,
 		}
 	case oauthProviderAnthropic:

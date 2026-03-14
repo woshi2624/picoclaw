@@ -92,6 +92,14 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 			cfg.RequestTimeout,
 		), modelID, nil
 
+	case "openai-codex":
+		// OpenAI Codex subscription (always uses OAuth credentials)
+		provider, err := createCodexAuthProvider()
+		if err != nil {
+			return nil, "", err
+		}
+		return provider, modelID, nil
+
 	case "litellm", "openrouter", "groq", "zhipu", "gemini", "nvidia",
 		"ollama", "moonshot", "shengsuanyun", "deepseek", "cerebras",
 		"vivgrid", "volcengine", "vllm", "qwen", "mistral", "avian",
@@ -129,13 +137,7 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 		if cfg.APIKey == "" {
 			return nil, "", fmt.Errorf("api_key is required for anthropic protocol (model: %s)", cfg.Model)
 		}
-		return NewHTTPProviderWithMaxTokensFieldAndRequestTimeout(
-			cfg.APIKey,
-			apiBase,
-			cfg.Proxy,
-			cfg.MaxTokensField,
-			cfg.RequestTimeout,
-		), modelID, nil
+		return NewClaudeProviderWithBaseURL(cfg.APIKey, apiBase), modelID, nil
 
 	case "antigravity":
 		return NewAntigravityProvider(), modelID, nil

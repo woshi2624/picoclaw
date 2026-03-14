@@ -336,3 +336,167 @@ func createTestZip(t *testing.T, files map[string]string) []byte {
 	require.NoError(t, zw.Close())
 	return buf.Bytes()
 }
+
+// --- Fallback download tests ---
+
+func TestClawHubRegistry_DownloadFallback_PrimarySucceeds(t *testing.T) {
+	zipBuf := createTestZip(t, map[string]string{
+		"SKILL.md": "---\nname: fb-skill\ndescription: fallback test\n---\nContent",
+	})
+
+	primaryHits := 0
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits++
+		w.Header().Set("Content-Type", "application/zip")
+		w.Write(zipBuf)
+	}))
+	defer primary.Close()
+
+	clawhub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/skills/fb-skill" {
+			json.NewEncoder(w).Encode(clawhubSkillResponse{
+				Slug:          "fb-skill",
+				Summary:       "test",
+				LatestVersion: &clawhubVersionInfo{Version: "1.0.0"},
+			})
+			return
+		}
+		t.Error("clawhub download should not be hit when primary succeeds")
+	}))
+	defer clawhub.Close()
+
+	reg := NewClawHubRegistry(ClawHubConfig{
+		Enabled:                    true,
+		BaseURL:                    clawhub.URL,
+		PrimaryDownloadURLTemplate: primary.URL + "/dl/{slug}/{version}",
+	})
+
+	targetDir := filepath.Join(t.TempDir(), "fb-skill")
+	result, err := reg.DownloadAndInstall(context.Background(), "fb-skill", "1.0.0", targetDir)
+
+	require.NoError(t, err)
+	assert.Equal(t, "1.0.0", result.Version)
+	assert.Equal(t, 1, primaryHits)
+}
+
+func TestClawHubRegistry_DownloadFallback_PrimaryFails_FallbackSucceeds(t *testing.T) {
+	zipBuf := createTestZip(t, map[string]string{
+		"SKILL.md": "---\nname: fb-skill\ndescription: fallback test\n---\nContent",
+	})
+
+	// Primary server that always returns 500 (fast failure, no retry hang).
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("not found"))
+	}))
+	defer primary.Close()
+
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		w.Write(zipBuf)
+	}))
+	defer fallback.Close()
+
+	clawhub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/skills/fb-skill" {
+			json.NewEncoder(w).Encode(clawhubSkillResponse{
+				Slug:          "fb-skill",
+				Summary:       "test",
+				LatestVersion: &clawhubVersionInfo{Version: "1.0.0"},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer clawhub.Close()
+
+	reg := NewClawHubRegistry(ClawHubConfig{
+		Enabled:                     true,
+		BaseURL:                     clawhub.URL,
+		PrimaryDownloadURLTemplate:  primary.URL + "/dl/{slug}",
+		FallbackDownloadURLTemplate: fallback.URL + "/dl/{slug}/{version}",
+	})
+
+	targetDir := filepath.Join(t.TempDir(), "fb-skill")
+	result, err := reg.DownloadAndInstall(context.Background(), "fb-skill", "1.0.0", targetDir)
+
+	require.NoError(t, err)
+	assert.Equal(t, "1.0.0", result.Version)
+}
+
+func TestClawHubRegistry_DownloadFallback_AllFail(t *testing.T) {
+	// Use servers that return errors quickly (no connection timeouts).
+	badPrimary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer badPrimary.Close()
+
+	badFallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer badFallback.Close()
+
+	clawhub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/skills/fb-skill" {
+			json.NewEncoder(w).Encode(clawhubSkillResponse{
+				Slug:          "fb-skill",
+				Summary:       "test",
+				LatestVersion: &clawhubVersionInfo{Version: "1.0.0"},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("server error"))
+	}))
+	defer clawhub.Close()
+
+	reg := NewClawHubRegistry(ClawHubConfig{
+		Enabled:                     true,
+		BaseURL:                     clawhub.URL,
+		PrimaryDownloadURLTemplate:  badPrimary.URL + "/dl/{slug}",
+		FallbackDownloadURLTemplate: badFallback.URL + "/dl/{slug}",
+	})
+
+	targetDir := filepath.Join(t.TempDir(), "fb-skill")
+	_, err := reg.DownloadAndInstall(context.Background(), "fb-skill", "1.0.0", targetDir)
+	require.Error(t, err)
+}
+
+func TestClawHubRegistry_DownloadFallback_NoTemplates(t *testing.T) {
+	// Backward compatibility: when no templates are configured, downloads from ClawHub directly.
+	zipBuf := createTestZip(t, map[string]string{
+		"SKILL.md": "---\nname: fb-skill\ndescription: compat test\n---\nContent",
+	})
+
+	clawhubHits := 0
+	clawhub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/skills/fb-skill" {
+			json.NewEncoder(w).Encode(clawhubSkillResponse{
+				Slug:          "fb-skill",
+				Summary:       "test",
+				LatestVersion: &clawhubVersionInfo{Version: "1.0.0"},
+			})
+			return
+		}
+		if r.URL.Path == "/api/v1/download" {
+			clawhubHits++
+			w.Header().Set("Content-Type", "application/zip")
+			w.Write(zipBuf)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer clawhub.Close()
+
+	reg := NewClawHubRegistry(ClawHubConfig{
+		Enabled: true,
+		BaseURL: clawhub.URL,
+	})
+
+	targetDir := filepath.Join(t.TempDir(), "fb-skill")
+	result, err := reg.DownloadAndInstall(context.Background(), "fb-skill", "1.0.0", targetDir)
+
+	require.NoError(t, err)
+	assert.Equal(t, "1.0.0", result.Version)
+	assert.Equal(t, 1, clawhubHits)
+}

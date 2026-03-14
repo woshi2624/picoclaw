@@ -31,6 +31,7 @@ type SkillMeta struct {
 	IsMalwareBlocked bool   `json:"is_malware_blocked"`
 	IsSuspicious     bool   `json:"is_suspicious"`
 	RegistryName     string `json:"registry_name"`
+	ExpectedSHA256   string `json:"expected_sha256,omitempty"`
 }
 
 // InstallResult is returned by DownloadAndInstall to carry metadata
@@ -66,15 +67,17 @@ type RegistryConfig struct {
 
 // ClawHubConfig configures the ClawHub registry.
 type ClawHubConfig struct {
-	Enabled         bool
-	BaseURL         string
-	AuthToken       string
-	SearchPath      string // e.g. "/api/v1/search"
-	SkillsPath      string // e.g. "/api/v1/skills"
-	DownloadPath    string // e.g. "/api/v1/download"
-	Timeout         int    // seconds, 0 = default (30s)
-	MaxZipSize      int    // bytes, 0 = default (50MB)
-	MaxResponseSize int    // bytes, 0 = default (2MB)
+	Enabled                     bool
+	BaseURL                     string
+	AuthToken                   string
+	SearchPath                  string // e.g. "/api/v1/search"
+	SkillsPath                  string // e.g. "/api/v1/skills"
+	DownloadPath                string // e.g. "/api/v1/download"
+	Timeout                     int    // seconds, 0 = default (30s)
+	MaxZipSize                  int    // bytes, 0 = default (50MB)
+	MaxResponseSize             int    // bytes, 0 = default (2MB)
+	PrimaryDownloadURLTemplate  string // e.g. "https://mirror.example.com/skills/{slug}"
+	FallbackDownloadURLTemplate string // e.g. "https://cdn.example.com/skills/{slug}"
 }
 
 // RegistryManager coordinates multiple skill registries.

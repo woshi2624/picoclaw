@@ -79,6 +79,9 @@ func resolveProviderSelection(cfg *config.Config) (providerSelection, error) {
 					sel.apiBase = "https://api.openai.com/v1"
 				}
 			}
+		case "openai-codex":
+			sel.providerType = providerTypeCodexAuth
+			return sel, nil
 		case "anthropic", "claude":
 			if cfg.Providers.Anthropic.APIKey != "" || cfg.Providers.Anthropic.AuthMethod != "" {
 				if cfg.Providers.Anthropic.AuthMethod == "oauth" || cfg.Providers.Anthropic.AuthMethod == "token" {
@@ -236,6 +239,9 @@ func resolveProviderSelection(cfg *config.Config) (providerSelection, error) {
 	// Fallback: infer provider from model and configured keys.
 	if sel.apiKey == "" && sel.apiBase == "" {
 		switch {
+		case strings.HasPrefix(model, "openai-codex/"):
+			sel.providerType = providerTypeCodexAuth
+			return sel, nil
 		case (strings.Contains(lowerModel, "kimi") || strings.Contains(lowerModel, "moonshot") || strings.HasPrefix(model, "moonshot/")) && cfg.Providers.Moonshot.APIKey != "":
 			sel.apiKey = cfg.Providers.Moonshot.APIKey
 			sel.apiBase = cfg.Providers.Moonshot.APIBase

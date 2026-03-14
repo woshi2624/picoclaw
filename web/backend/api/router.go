@@ -63,4 +63,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// Launcher service parameters (port/public)
 	h.registerLauncherConfigRoutes(mux)
+
+	// Onboarding wizard
+	h.registerOnboardRoutes(mux)
+
+	// Token usage statistics
+	h.registerUsageRoutes(mux)
+
+	// Skill management (list, search, install, uninstall)
+	h.registerSkillRoutes(mux)
 }

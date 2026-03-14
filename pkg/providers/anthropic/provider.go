@@ -1,15 +1,20 @@
 package anthropicprovider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
 
@@ -19,6 +24,8 @@ type (
 	LLMResponse            = protocoltypes.LLMResponse
 	UsageInfo              = protocoltypes.UsageInfo
 	Message                = protocoltypes.Message
+	ContentBlock           = protocoltypes.ContentBlock
+	CacheControl           = protocoltypes.CacheControl
 	ToolDefinition         = protocoltypes.ToolDefinition
 	ToolFunctionDefinition = protocoltypes.ToolFunctionDefinition
 )
@@ -28,10 +35,13 @@ const (
 	anthropicBetaHeader = "oauth-2025-04-20"
 )
 
+// retryDelayUnit controls the base delay between retries. Override in tests.
+var retryDelayUnit = time.Second
+
 type Provider struct {
-	client      *anthropic.Client
 	tokenSource func() (string, error)
 	baseURL     string
+	apiKey      string
 }
 
 // SupportsThinking implements providers.ThinkingCapable.
@@ -42,21 +52,9 @@ func NewProvider(token string) *Provider {
 }
 
 func NewProviderWithBaseURL(token, apiBase string) *Provider {
-	baseURL := normalizeBaseURL(apiBase)
-	client := anthropic.NewClient(
-		option.WithAuthToken(token),
-		option.WithBaseURL(baseURL),
-	)
 	return &Provider{
-		client:  &client,
-		baseURL: baseURL,
-	}
-}
-
-func NewProviderWithClient(client *anthropic.Client) *Provider {
-	return &Provider{
-		client:  client,
-		baseURL: defaultBaseURL,
+		baseURL: normalizeBaseURL(apiBase),
+		apiKey:  token,
 	}
 }
 
@@ -65,9 +63,11 @@ func NewProviderWithTokenSource(token string, tokenSource func() (string, error)
 }
 
 func NewProviderWithTokenSourceAndBaseURL(token string, tokenSource func() (string, error), apiBase string) *Provider {
-	p := NewProviderWithBaseURL(token, apiBase)
-	p.tokenSource = tokenSource
-	return p
+	return &Provider{
+		tokenSource: tokenSource,
+		baseURL:     normalizeBaseURL(apiBase),
+		apiKey:      token,
+	}
 }
 
 func (p *Provider) Chat(
@@ -77,56 +77,120 @@ func (p *Provider) Chat(
 	model string,
 	options map[string]any,
 ) (*LLMResponse, error) {
-	var opts []option.RequestOption
-	if p.tokenSource != nil {
-		tok, err := p.tokenSource()
-		if err != nil {
-			return nil, fmt.Errorf("refreshing token: %w", err)
-		}
-		opts = append(opts,
-			option.WithAuthToken(tok),
-			option.WithHeader("anthropic-beta", anthropicBetaHeader),
-		)
-	}
-
 	params, err := buildParams(messages, tools, model, options)
 	if err != nil {
 		return nil, err
 	}
 
-	// OAuth/setup-tokens require streaming; API keys use non-streaming.
 	if p.tokenSource != nil {
-		return p.chatStreaming(ctx, params, opts)
+		// Token is fetched fresh per-attempt inside doHTTPStreaming; log placeholder.
+		logAnthropicRequest(p.baseURL, params, true, requestHeadersForAuthToken(""))
+	} else {
+		logAnthropicRequest(p.baseURL, params, true, requestHeadersForAPIKey(p.apiKey))
 	}
 
-	resp, err := p.client.Messages.New(ctx, params, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("claude API call: %w", err)
-	}
-
-	return parseResponse(resp), nil
+	return p.chatStreaming(ctx, params)
 }
 
 func (p *Provider) chatStreaming(
 	ctx context.Context,
 	params anthropic.MessageNewParams,
-	opts []option.RequestOption,
 ) (*LLMResponse, error) {
-	stream := p.client.Messages.NewStreaming(ctx, params, opts...)
-	defer stream.Close()
+	const maxAttempts = 3
+	var lastErr error
 
-	var msg anthropic.Message
-	for stream.Next() {
-		event := stream.Current()
-		if err := msg.Accumulate(event); err != nil {
-			return nil, fmt.Errorf("claude streaming accumulate: %w", err)
+	for attempt := range maxAttempts {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(retryDelayUnit * time.Duration(attempt)):
+			}
+		}
+
+		resp, err := p.doHTTPStreaming(ctx, params)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if !isProxyRetryable(err) {
+			break
+		}
+		log.Printf("anthropic: retrying after transient error (attempt %d/%d): %v", attempt+1, maxAttempts, err)
+	}
+	return nil, fmt.Errorf("claude API call: %w", lastErr)
+}
+
+// doHTTPStreaming sends a raw HTTP POST that mirrors the curl command:
+//
+//	curl -H 'content-type: application/json' \
+//	     -H 'x-api-key: <key>' \
+//	     -H 'anthropic-version: 2023-06-01' \
+//	     -d '<body>' \
+//	     https://<base>/v1/messages
+//
+// This avoids SDK-injected headers (X-Stainless-*, User-Agent, etc.) that some
+// proxy relays reject with 403.
+func (p *Provider) doHTTPStreaming(ctx context.Context, params anthropic.MessageNewParams) (*LLMResponse, error) {
+	bodyStr, err := marshalAnthropicRequestBody(params, true)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+
+	url := strings.TrimRight(p.baseURL, "/") + "/v1/messages"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBufferString(bodyStr))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("anthropic-version", "2023-06-01")
+	if p.tokenSource != nil {
+		tok, err := p.tokenSource()
+		if err != nil {
+			return nil, fmt.Errorf("refreshing token: %w", err)
+		}
+		req.Header.Set("authorization", "Bearer "+tok)
+		req.Header.Set("anthropic-beta", anthropicBetaHeader)
+	} else {
+		req.Header.Set("x-api-key", p.apiKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, &proxyHTTPError{
+			StatusCode: resp.StatusCode,
+			Body:       strings.TrimSpace(string(body)),
 		}
 	}
-	if err := stream.Err(); err != nil {
-		return nil, fmt.Errorf("claude API call: %w", err)
-	}
 
-	return parseResponse(&msg), nil
+	return parseAnthropicSSE(resp.Body)
+}
+
+// proxyHTTPError is returned when the relay/proxy responds with a non-200 status.
+type proxyHTTPError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *proxyHTTPError) Error() string {
+	return fmt.Sprintf("%d %s: %s", e.StatusCode, http.StatusText(e.StatusCode), e.Body)
+}
+
+func isProxyRetryable(err error) bool {
+	var httpErr *proxyHTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode == http.StatusForbidden ||
+			httpErr.StatusCode == http.StatusTooManyRequests ||
+			httpErr.StatusCode >= 500
+	}
+	return false
 }
 
 func (p *Provider) GetDefaultModel() string {
@@ -154,11 +218,7 @@ func buildParams(
 			// hash stays stable across requests while dynamic parts change freely.
 			if len(msg.SystemParts) > 0 {
 				for _, part := range msg.SystemParts {
-					block := anthropic.TextBlockParam{Text: part.Text}
-					if part.CacheControl != nil && part.CacheControl.Type == "ephemeral" {
-						block.CacheControl = anthropic.NewCacheControlEphemeralParam()
-					}
-					system = append(system, block)
+					system = append(system, anthropic.TextBlockParam{Text: part.Text})
 				}
 			} else {
 				system = append(system, anthropic.TextBlockParam{Text: msg.Content})
@@ -331,57 +391,6 @@ func translateTools(tools []ToolDefinition) []anthropic.ToolUnionParam {
 	return result
 }
 
-func parseResponse(resp *anthropic.Message) *LLMResponse {
-	var content strings.Builder
-	var reasoning strings.Builder
-	var toolCalls []ToolCall
-
-	for _, block := range resp.Content {
-		switch block.Type {
-		case "thinking":
-			tb := block.AsThinking()
-			reasoning.WriteString(tb.Thinking)
-		case "text":
-			tb := block.AsText()
-			content.WriteString(tb.Text)
-		case "tool_use":
-			tu := block.AsToolUse()
-			var args map[string]any
-			if err := json.Unmarshal(tu.Input, &args); err != nil {
-				log.Printf("anthropic: failed to decode tool call input for %q: %v", tu.Name, err)
-				args = map[string]any{"raw": string(tu.Input)}
-			}
-			toolCalls = append(toolCalls, ToolCall{
-				ID:        tu.ID,
-				Name:      tu.Name,
-				Arguments: args,
-			})
-		}
-	}
-
-	finishReason := "stop"
-	switch resp.StopReason {
-	case anthropic.StopReasonToolUse:
-		finishReason = "tool_calls"
-	case anthropic.StopReasonMaxTokens:
-		finishReason = "length"
-	case anthropic.StopReasonEndTurn:
-		finishReason = "stop"
-	}
-
-	return &LLMResponse{
-		Content:      content.String(),
-		Reasoning:    reasoning.String(),
-		ToolCalls:    toolCalls,
-		FinishReason: finishReason,
-		Usage: &UsageInfo{
-			PromptTokens:     int(resp.Usage.InputTokens),
-			CompletionTokens: int(resp.Usage.OutputTokens),
-			TotalTokens:      int(resp.Usage.InputTokens + resp.Usage.OutputTokens),
-		},
-	}
-}
-
 func normalizeBaseURL(apiBase string) string {
 	base := strings.TrimSpace(apiBase)
 	if base == "" {
@@ -397,4 +406,66 @@ func normalizeBaseURL(apiBase string) string {
 	}
 
 	return base
+}
+
+func logAnthropicRequest(baseURL string, params anthropic.MessageNewParams, streaming bool, headers map[string]string) {
+	body, err := marshalAnthropicRequestBody(params, streaming)
+	if err != nil {
+		body = fmt.Sprintf(`{"marshal_error":%q}`, err.Error())
+	}
+
+	logger.InfoCF("provider.anthropic", "Sending Anthropic request", map[string]any{
+		"url":     strings.TrimRight(baseURL, "/") + "/v1/messages",
+		"stream":  streaming,
+		"headers": headers,
+		"body":    body,
+	})
+}
+
+func marshalAnthropicRequestBody(params anthropic.MessageNewParams, streaming bool) (string, error) {
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return "", err
+	}
+	if !streaming {
+		return string(raw), nil
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return "", err
+	}
+	payload["stream"] = true
+	raw, err = json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func requestHeadersForAPIKey(apiKey string) map[string]string {
+	return map[string]string{
+		"Content-Type":      "application/json",
+		"anthropic-version": "2023-06-01",
+		"X-Api-Key":         maskSecret(apiKey),
+	}
+}
+
+func requestHeadersForAuthToken(token string) map[string]string {
+	return map[string]string{
+		"Content-Type":      "application/json",
+		"anthropic-version": "2023-06-01",
+		"anthropic-beta":    anthropicBetaHeader,
+		"Authorization":     "Bearer " + maskSecret(token),
+	}
+}
+
+func maskSecret(secret string) string {
+	if secret == "" {
+		return ""
+	}
+	if len(secret) <= 8 {
+		return "***"
+	}
+	return secret[:4] + "..." + secret[len(secret)-4:]
 }

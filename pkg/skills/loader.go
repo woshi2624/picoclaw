@@ -14,7 +14,7 @@ import (
 )
 
 var (
-	namePattern        = regexp.MustCompile(`^[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*$`)
+	namePattern        = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9\-_ .]*$`)
 	reFrontmatter      = regexp.MustCompile(`(?s)^---(?:\r\n|\n|\r)(.*?)(?:\r\n|\n|\r)---`)
 	reStripFrontmatter = regexp.MustCompile(`(?s)^---(?:\r\n|\n|\r)(.*?)(?:\r\n|\n|\r)---(?:\r\n|\n|\r)*`)
 )
@@ -34,6 +34,7 @@ type SkillInfo struct {
 	Path        string `json:"path"`
 	Source      string `json:"source"`
 	Description string `json:"description"`
+	Version     string `json:"version,omitempty"`
 }
 
 func (info SkillInfo) validate() error {
@@ -45,13 +46,11 @@ func (info SkillInfo) validate() error {
 			errs = errors.Join(errs, fmt.Errorf("name exceeds %d characters", MaxNameLength))
 		}
 		if !namePattern.MatchString(info.Name) {
-			errs = errors.Join(errs, errors.New("name must be alphanumeric with hyphens"))
+			errs = errors.Join(errs, errors.New("name must start with alphanumeric and only contain alphanumeric, hyphens, underscores, dots, and spaces"))
 		}
 	}
 
-	if info.Description == "" {
-		errs = errors.Join(errs, errors.New("description is required"))
-	} else if len(info.Description) > MaxDescriptionLength {
+	if len(info.Description) > MaxDescriptionLength {
 		errs = errors.Join(errs, fmt.Errorf("description exceeds %d character", MaxDescriptionLength))
 	}
 	return errs
@@ -126,6 +125,8 @@ func (sl *SkillsLoader) ListSkills() []SkillInfo {
 				info.Description = metadata.Description
 				info.Name = metadata.Name
 			}
+			// Read installed version from .skill-origin.json if present.
+			info.Version = sl.readOriginVersion(filepath.Join(dir, d.Name()))
 			if err := info.validate(); err != nil {
 				slog.Warn("invalid skill from "+source, "name", info.Name, "error", err)
 				continue
@@ -213,6 +214,21 @@ func (sl *SkillsLoader) BuildSkillsSummary() string {
 	lines = append(lines, "</skills>")
 
 	return strings.Join(lines, "\n")
+}
+
+// readOriginVersion reads the installed_version from .skill-origin.json in the skill directory.
+func (sl *SkillsLoader) readOriginVersion(skillDir string) string {
+	data, err := os.ReadFile(filepath.Join(skillDir, ".skill-origin.json"))
+	if err != nil {
+		return ""
+	}
+	var origin struct {
+		InstalledVersion string `json:"installed_version"`
+	}
+	if err := json.Unmarshal(data, &origin); err != nil {
+		return ""
+	}
+	return origin.InstalledVersion
 }
 
 func (sl *SkillsLoader) getSkillMetadata(skillPath string) *SkillMetadata {

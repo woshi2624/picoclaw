@@ -32,6 +32,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/skills"
 	"github.com/sipeed/picoclaw/pkg/state"
 	"github.com/sipeed/picoclaw/pkg/tools"
+	"github.com/sipeed/picoclaw/pkg/usage"
 	"github.com/sipeed/picoclaw/pkg/utils"
 	"github.com/sipeed/picoclaw/pkg/voice"
 )
@@ -48,6 +49,7 @@ type AgentLoop struct {
 	mediaStore     media.MediaStore
 	transcriber    voice.Transcriber
 	cmdRegistry    *commands.Registry
+	usageLogger    *usage.Logger
 }
 
 // processOptions configures how a message is processed
@@ -90,8 +92,12 @@ func NewAgentLoop(
 	// Create state manager using default agent's workspace for channel recording
 	defaultAgent := registry.GetDefaultAgent()
 	var stateManager *state.Manager
+	var usageLog *usage.Logger
 	if defaultAgent != nil {
 		stateManager = state.NewManager(defaultAgent.Workspace)
+		if ul, err := usage.NewLogger(defaultAgent.Workspace); err == nil {
+			usageLog = ul
+		}
 	}
 
 	al := &AgentLoop{
@@ -102,6 +108,7 @@ func NewAgentLoop(
 		summarizing: sync.Map{},
 		fallback:    fallbackChain,
 		cmdRegistry: commands.NewRegistry(commands.BuiltinDefinitions()),
+		usageLogger: usageLog,
 	}
 
 	return al
@@ -946,11 +953,25 @@ func (al *AgentLoop) runLLMIteration(
 		// Build tool definitions
 		providerToolDefs := agent.Tools.ToProviderDefs()
 
+		providerName := "unknown"
+		if len(activeCandidates) > 0 {
+			providerName = activeCandidates[0].Provider
+		}
+
+		logger.InfoCF("agent", fmt.Sprintf("Calling LLM -> Provider: %s, Model: %s", providerName, activeModel),
+			map[string]any{
+				"agent_id":  agent.ID,
+				"provider":  providerName,
+				"model":     activeModel,
+				"iteration": iteration,
+			})
+
 		// Log LLM request details
 		logger.DebugCF("agent", "LLM request",
 			map[string]any{
 				"agent_id":          agent.ID,
 				"iteration":         iteration,
+				"provider":          providerName,
 				"model":             activeModel,
 				"messages_count":    len(messages),
 				"tools_count":       len(providerToolDefs),
@@ -1089,6 +1110,17 @@ func (al *AgentLoop) runLLMIteration(
 					"error":     err.Error(),
 				})
 			return "", iteration, fmt.Errorf("LLM call failed after retries: %w", err)
+		}
+
+		if response.Usage != nil && al.usageLogger != nil {
+			al.usageLogger.Log(usage.UsageEntry{
+				Model:            activeModel,
+				PromptTokens:     response.Usage.PromptTokens,
+				CompletionTokens: response.Usage.CompletionTokens,
+				TotalTokens:      response.Usage.TotalTokens,
+				SessionKey:       opts.SessionKey,
+				AgentID:          agent.ID,
+			})
 		}
 
 		go al.handleReasoning(

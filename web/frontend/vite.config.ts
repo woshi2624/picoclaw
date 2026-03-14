@@ -29,6 +29,14 @@ export default defineConfig({
         target: "http://localhost:18800",
         changeOrigin: true,
       },
+      "/oauth": {
+        target: "http://localhost:18800",
+        changeOrigin: true,
+      },
+      "/auth": {
+        target: "http://localhost:18800",
+        changeOrigin: true,
+      },
       "/ws": {
         target: "ws://localhost:18800",
         ws: true,

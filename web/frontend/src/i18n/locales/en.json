@@ -9,7 +9,9 @@
     "show_more_channels": "More",
     "show_less_channels": "Less",
     "config": "Config",
-    "logs": "Logs"
+    "skills": "Skills",
+    "logs": "Logs",
+    "usage": "Usage"
   },
   "chat": {
     "welcome": "How can I help you today?",
@@ -169,7 +171,9 @@
       "errorRequired": "This field is required.",
       "errorDuplicateModelName": "Model alias already exists. Please use a different name.",
       "saveError": "Failed to add model",
-      "confirm": "Add Model"
+      "confirm": "Add Model",
+      "codexOAuthDescription": "Sign in with your OpenAI account to use Codex. No API key required.",
+      "codexOAuthRequired": "Please authenticate via OAuth before saving."
     },
     "delete": {
       "title": "Delete Model?",
@@ -323,6 +327,67 @@
       "requiredField": "This field is required."
     }
   },
+  "onboard": {
+    "welcome": {
+      "title": "Welcome to PicoClaw",
+      "description": "Let's get your AI agent up and running in just a few steps.",
+      "version": "Version",
+      "system": "System",
+      "start": "Get Started"
+    },
+    "model": {
+      "title": "Configure AI Model",
+      "description": "Select a provider and enter your API key to connect your AI model.",
+      "provider": "Provider",
+      "providerPlaceholder": "Select a provider",
+      "modelId": "Model",
+      "apiBase": "API Base URL",
+      "apiKey": "API Key",
+      "apiKeyPlaceholder": "Enter your API key",
+      "verify": "Verify",
+      "verifying": "Verifying...",
+      "verifySuccess": "API key verified successfully!",
+      "verifyFailed": "Verification failed",
+      "next": "Next"
+    },
+    "channel": {
+      "title": "Connect a Channel",
+      "description": "Choose a messaging platform to connect your agent. You can skip this and configure it later.",
+      "skip": "Skip",
+      "finish": "Finish Setup",
+      "fields": {
+        "token": "Bot Token",
+        "app_id": "App ID",
+        "app_secret": "App Secret",
+        "client_id": "Client ID",
+        "client_secret": "Client Secret",
+        "bot_token": "Bot Token",
+        "app_token": "App Token"
+      }
+    },
+    "codex": {
+      "description": "Sign in with your ChatGPT account to use OpenAI models via Codex OAuth. No API key needed.",
+      "browser": "Browser Login",
+      "deviceCode": "Device Code",
+      "deviceCodeHint": "Open the verification page and enter the code below:",
+      "openVerify": "Open Verification Page",
+      "loginSuccess": "OpenAI login successful!",
+      "loginFailed": "Login failed",
+      "popupBlocked": "Unable to open a new tab. Please allow popups and try again."
+    },
+    "done": {
+      "title": "You're All Set!",
+      "description": "Your configuration has been saved to:",
+      "enter": "Enter Console",
+      "error": "Failed to save configuration",
+      "retry": "Retry"
+    },
+    "steps": {
+      "welcome": "Welcome",
+      "model": "Model",
+      "channel": "Channel"
+    }
+  },
   "pages": {
     "config": {
       "load_error": "Failed to load configuration. Please refresh and try again.",
@@ -388,6 +453,58 @@
     },
     "logs": {
       "description": "System logs and monitoring."
+    },
+    "usage": {
+      "description": "Token usage statistics across all models.",
+      "today": "Today",
+      "last_7_days": "Last 7 Days",
+      "period_total": "Last {{days}} Days",
+      "daily_usage": "Daily Usage",
+      "by_model": "By Model",
+      "model": "Model",
+      "prompt": "Prompt",
+      "completion": "Completion",
+      "total": "Total",
+      "requests": "Requests",
+      "no_data": "No usage data yet."
     }
+  },
+  "skills": {
+    "title": "Skills",
+    "description": "Manage installed skills and discover new ones from registries.",
+    "installed": "Installed Skills",
+    "noInstalled": "No skills installed yet.",
+    "noDescription": "No description available.",
+    "loadError": "Failed to load skills.",
+    "searchAndInstall": "Search & Install",
+    "searchPlaceholder": "Search for skills...",
+    "search": "Search",
+    "searchError": "Search failed. Check that a skill registry is configured.",
+    "noResults": "No skills found for this query.",
+    "install": "Install",
+    "alreadyInstalled": "Installed",
+    "installSuccess": "Skill '{{name}}' v{{version}} installed successfully.",
+    "installError": "Failed to install skill",
+    "uninstall": "Uninstall",
+    "uninstallSuccess": "Skill '{{name}}' uninstalled.",
+    "uninstallError": "Failed to uninstall skill",
+    "uninstallConfirm": {
+      "title": "Uninstall Skill?",
+      "description": "\"{{name}}\" will be removed from your workspace. This cannot be undone."
+    },
+    "source": {
+      "workspace": "Workspace",
+      "global": "Global",
+      "builtin": "Built-in"
+    },
+    "checkUpgrades": "Check for Updates",
+    "upgrade": "Upgrade",
+    "upgradeAll": "Upgrade All",
+    "upgradesAvailable": "{{count}} upgrade(s) available.",
+    "allUpToDate": "All skills are up to date.",
+    "upgradeSuccess": "Skill '{{name}}' upgraded to v{{version}}.",
+    "upgradeAllSuccess": "{{count}} skill(s) upgraded successfully.",
+    "upgradeError": "Upgrade failed",
+    "checkUpgradeError": "Failed to check for updates"
   }
 }

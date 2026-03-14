@@ -1,11 +1,13 @@
 import { IconChevronRight } from "@tabler/icons-react"
 import {
   IconAtom,
+  IconChartBar,
   IconChevronsDown,
   IconChevronsUp,
   IconKey,
   IconListDetails,
   IconMessageCircle,
+  IconPackage,
   IconSettings,
 } from "@tabler/icons-react"
 import { Link, useRouterState } from "@tanstack/react-router"
@@ -115,9 +117,21 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         ...baseNavGroups[2],
         items: [
           {
+            title: "navigation.skills",
+            url: "/skills",
+            icon: IconPackage,
+            translateTitle: true,
+          },
+          {
             title: "navigation.config",
             url: "/config",
             icon: IconSettings,
+            translateTitle: true,
+          },
+          {
+            title: "navigation.usage",
+            url: "/usage",
+            icon: IconChartBar,
             translateTitle: true,
           },
           {

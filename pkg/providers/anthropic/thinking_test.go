@@ -1,7 +1,7 @@
 package anthropicprovider
 
 import (
-	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -141,28 +141,26 @@ func TestBuildParams_ThinkingClearsTemperature(t *testing.T) {
 	}
 }
 
-// unmarshalBlocks constructs []ContentBlockUnion via JSON round-trip so that
-// the internal JSON.raw field is populated (required by AsText/AsThinking).
-func unmarshalBlocks(t *testing.T, jsonStr string) []anthropic.ContentBlockUnion {
-	t.Helper()
-	var blocks []anthropic.ContentBlockUnion
-	if err := json.Unmarshal([]byte(jsonStr), &blocks); err != nil {
-		t.Fatalf("unmarshalBlocks: %v", err)
-	}
-	return blocks
-}
+// unmarshalBlocks is no longer used; thinking response parsing is tested via parseAnthropicSSE.
 
 func TestParseResponse_ThinkingBlock(t *testing.T) {
-	resp := &anthropic.Message{
-		Content: unmarshalBlocks(t, `[
-			{"type":"thinking","thinking":"Let me reason step by step...","signature":"sig"},
-			{"type":"text","text":"The answer is 42."}
-		]`),
-		StopReason: anthropic.StopReasonEndTurn,
+	// Verify that thinking_delta events populate the Reasoning field.
+	sse := strings.NewReader(
+		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5}}}\n\n" +
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\"}}\n\n" +
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Let me reason step by step...\"}}\n\n" +
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"The answer is 42.\"}}\n\n" +
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n" +
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":10}}\n\n" +
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+	)
+
+	result, err := parseAnthropicSSE(sse)
+	if err != nil {
+		t.Fatalf("parseAnthropicSSE error: %v", err)
 	}
-
-	result := parseResponse(resp)
-
 	if result.Reasoning != "Let me reason step by step..." {
 		t.Errorf("Reasoning = %q, want thinking content", result.Reasoning)
 	}
@@ -175,15 +173,19 @@ func TestParseResponse_ThinkingBlock(t *testing.T) {
 }
 
 func TestParseResponse_NoThinkingBlock(t *testing.T) {
-	resp := &anthropic.Message{
-		Content: unmarshalBlocks(t, `[
-			{"type":"text","text":"Just a normal response."}
-		]`),
-		StopReason: anthropic.StopReasonEndTurn,
+	sse := strings.NewReader(
+		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5}}}\n\n" +
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Just a normal response.\"}}\n\n" +
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n" +
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+	)
+
+	result, err := parseAnthropicSSE(sse)
+	if err != nil {
+		t.Fatalf("parseAnthropicSSE error: %v", err)
 	}
-
-	result := parseResponse(resp)
-
 	if result.Reasoning != "" {
 		t.Errorf("Reasoning = %q, want empty", result.Reasoning)
 	}

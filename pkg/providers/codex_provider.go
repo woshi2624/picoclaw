@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	codexDefaultModel        = "gpt-5.2"
+	codexDefaultModel        = "gpt-5.4"
 	codexDefaultInstructions = "You are Codex, a coding assistant."
 )
 
@@ -164,6 +164,8 @@ func resolveCodexModel(model string) (string, string) {
 	}
 
 	if after, ok := strings.CutPrefix(m, "openai/"); ok {
+		m = after
+	} else if after, ok := strings.CutPrefix(m, "openai-codex/"); ok {
 		m = after
 	} else if strings.Contains(m, "/") {
 		return codexDefaultModel, "non-openai model namespace"

@@ -4,16 +4,35 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 )
 
-const maxRetries = 3
+const maxRetries = 5
 
 var retryDelayUnit = time.Second
 
 func shouldRetry(statusCode int) bool {
 	return statusCode == http.StatusTooManyRequests ||
 		statusCode >= 500
+}
+
+// retryDelay returns the delay before the next retry attempt.
+// For 429 responses, it respects the Retry-After header if present,
+// otherwise uses exponential backoff (2s, 4s, 8s, 16s).
+// For 5xx errors, uses linear backoff (1s, 2s, 3s, 4s).
+func retryDelay(resp *http.Response, attempt int) time.Duration {
+	if resp != nil && resp.StatusCode == http.StatusTooManyRequests {
+		if ra := resp.Header.Get("Retry-After"); ra != "" {
+			if secs, err := strconv.Atoi(ra); err == nil && secs > 0 && secs <= 120 {
+				return time.Duration(secs) * time.Second
+			}
+		}
+		// Exponential backoff for 429 without Retry-After
+		return retryDelayUnit * time.Duration(1<<uint(attempt))
+	}
+	// Linear backoff for 5xx
+	return retryDelayUnit * time.Duration(attempt+1)
 }
 
 func DoRequestWithRetry(client *http.Client, req *http.Request) (*http.Response, error) {
@@ -36,7 +55,8 @@ func DoRequestWithRetry(client *http.Client, req *http.Request) (*http.Response,
 		}
 
 		if i < maxRetries-1 {
-			if err = sleepWithCtx(req.Context(), retryDelayUnit*time.Duration(i+1)); err != nil {
+			delay := retryDelay(resp, i)
+			if err = sleepWithCtx(req.Context(), delay); err != nil {
 				if resp != nil {
 					resp.Body.Close()
 				}

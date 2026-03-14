@@ -2,9 +2,12 @@ import { createFileRoute } from "@tanstack/react-router"
 import { useAtomValue } from "jotai"
 import { useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
+import { IconCopy, IconTrash } from "@tabler/icons-react"
+import { toast } from "sonner"
 
 import { getGatewayStatus } from "@/api/gateway"
 import { PageHeader } from "@/components/page-header"
+import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { gatewayAtom } from "@/store/gateway"
 
@@ -85,18 +88,51 @@ function LogsPage() {
     }
   }, [logs])
 
+  const handleCopy = async () => {
+    const content = logs.join("\n")
+    if (!content) {
+      toast.error("No logs to copy")
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(content)
+      toast.success("Logs copied")
+    } catch {
+      toast.error("Failed to copy logs")
+    }
+  }
+
+  const handleClear = () => {
+    setLogs([])
+    logOffsetRef.current = 0
+    toast.success("Logs cleared")
+  }
+
   return (
     <div className="flex h-full flex-col">
       <PageHeader title={t("navigation.logs")} />
 
       <div className="flex flex-1 flex-col overflow-hidden p-4 sm:p-8">
-        <div className="mb-4">
-          <h1 className="text-2xl font-semibold tracking-tight">
-            {t("navigation.logs")}
-          </h1>
-          <p className="text-muted-foreground mt-2 text-sm">
-            {t("pages.logs.description")}
-          </p>
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">
+              {t("navigation.logs")}
+            </h1>
+            <p className="text-muted-foreground mt-2 text-sm">
+              {t("pages.logs.description")}
+            </p>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-2">
+            <Button onClick={handleCopy} size="sm" type="button" variant="outline">
+              <IconCopy className="mr-2 h-4 w-4" />
+              复制
+            </Button>
+            <Button onClick={handleClear} size="sm" type="button" variant="outline">
+              <IconTrash className="mr-2 h-4 w-4" />
+              清空
+            </Button>
+          </div>
         </div>
 
         <div className="bg-muted/30 relative flex-1 overflow-hidden rounded-lg border">

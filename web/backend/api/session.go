@@ -61,6 +61,16 @@ func extractPicoSessionID(key string) (string, bool) {
 // sessionsDir resolves the path to the gateway's session storage directory.
 // It reads the workspace from config, falling back to ~/.picoclaw/workspace.
 func (h *Handler) sessionsDir() (string, error) {
+	workspace, err := h.workspaceDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(workspace, "sessions"), nil
+}
+
+// workspaceDir resolves the agent workspace directory from config,
+// falling back to ~/.picoclaw/workspace.
+func (h *Handler) workspaceDir() (string, error) {
 	cfg, err := config.LoadConfig(h.configPath)
 	if err != nil {
 		return "", err
@@ -82,7 +92,7 @@ func (h *Handler) sessionsDir() (string, error) {
 		}
 	}
 
-	return filepath.Join(workspace, "sessions"), nil
+	return workspace, nil
 }
 
 // handleListSessions returns a list of Pico session summaries.
