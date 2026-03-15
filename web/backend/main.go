@@ -61,6 +61,13 @@ func main() {
 		log.Fatalf("Failed to resolve config path: %v", err)
 	}
 
+	// Extract embedded picoclaw binary (no-op in dev builds).
+	if embeddedBinPath, err := ensurePicoclawBinary(); err != nil {
+		log.Printf("Warning: failed to extract embedded picoclaw binary: %v", err)
+	} else if embeddedBinPath != "" {
+		_ = os.Setenv("PICOCLAW_BINARY", embeddedBinPath)
+	}
+
 	var explicitPort bool
 	var explicitPublic bool
 	flag.Visit(func(f *flag.Flag) {

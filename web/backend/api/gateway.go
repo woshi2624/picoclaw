@@ -41,6 +41,30 @@ func (h *Handler) registerGatewayRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/gateway/restart", h.handleGatewayRestart)
 }
 
+// isGatewayHealthyLocked probes the gateway health endpoint; returns true if
+// an instance (including externally-started ones) is already responding.
+// Must be called with gateway.mu held.
+func (h *Handler) isGatewayHealthyLocked() bool {
+	cfg, _ := config.LoadConfig(h.configPath)
+	host, port := "127.0.0.1", 18790
+	if cfg != nil {
+		if cfg.Gateway.Host != "" && cfg.Gateway.Host != "0.0.0.0" {
+			host = cfg.Gateway.Host
+		}
+		if cfg.Gateway.Port != 0 {
+			port = cfg.Gateway.Port
+		}
+	}
+	url := fmt.Sprintf("http://%s/health", net.JoinHostPort(host, strconv.Itoa(port)))
+	client := http.Client{Timeout: 1 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
 // TryAutoStartGateway checks whether gateway start preconditions are met and
 // starts it when possible. Intended to be called by the backend at startup.
 func (h *Handler) TryAutoStartGateway() {
@@ -52,6 +76,12 @@ func (h *Handler) TryAutoStartGateway() {
 	}
 	if gateway.cmd != nil && gateway.cmd.Process != nil {
 		gateway.cmd = nil
+	}
+
+	// Detect externally-running gateway (e.g. second launcher instance)
+	if h.isGatewayHealthyLocked() {
+		log.Printf("Skip auto-starting gateway: already responding on health endpoint")
+		return
 	}
 
 	ready, reason, err := h.gatewayStartReady()

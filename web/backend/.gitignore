@@ -11,6 +11,9 @@ picoclaw-web
 dist/*
 !dist/.gitkeep
 
+# Embedded agent binary (populated during dist build, not for VCS)
+embedded/
+
 # OS
 .DS_Store
 
