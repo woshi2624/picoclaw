@@ -73,6 +73,24 @@ cmd_generate() {
   go generate ./...
 }
 
+cmd_package() {
+  local goos=$1 goarch=$2 agent_bin=$3 launcher_bin=$4
+  local suffix=""
+  [[ "$goos" == "windows" ]] && suffix=".exe"
+
+  local pkg_name="${PROJECT_NAME}-${goos}-${goarch}"
+  local stage_dir="${BUILD_DIR}/.stage"
+
+  info "Packaging ${pkg_name}.zip..."
+  rm -rf "${stage_dir}/${pkg_name}"
+  mkdir -p "${stage_dir}/${pkg_name}"
+  cp "${BUILD_DIR}/${agent_bin}" "${stage_dir}/${pkg_name}/${PROJECT_NAME}${suffix}"
+  cp "${BUILD_DIR}/${launcher_bin}" "${stage_dir}/${pkg_name}/${PROJECT_NAME}-launcher${suffix}"
+  (cd "${stage_dir}" && zip -r "../${pkg_name}.zip" "${pkg_name}/")
+  rm -rf "${stage_dir}/${pkg_name}"
+  ok "Packaged: ${BUILD_DIR}/${pkg_name}.zip"
+}
+
 cmd_build() {
   local targets=("${@:-}")
   [[ ${#targets[@]} -eq 0 || -z "${targets[0]}" ]] && targets=("${DEFAULT_TARGETS[@]}")
@@ -105,10 +123,18 @@ cmd_build() {
     [[ "$goos" == "windows" ]] && suffix=".exe"
     (cd "$BUILD_DIR" && ln -sf "$agent_bin" "${PROJECT_NAME}${suffix}")
     (cd "$BUILD_DIR" && ln -sf "$launcher_bin" "${PROJECT_NAME}-launcher${suffix}")
+
+    # Package platform binaries into zip archive
+    cmd_package "$goos" "$goarch" "$agent_bin" "$launcher_bin"
   done
 
-  ok "Build complete. Artifacts in ${BUILD_DIR}/:"
-  ls -lh "$BUILD_DIR"/ | grep -v "^total"
+  rm -rf "${BUILD_DIR}/.stage"
+
+  # Remove all non-zip files (binaries, symlinks, etc.)
+  find "${BUILD_DIR}" -maxdepth 1 ! -name "*.zip" -not -type d -delete
+
+  ok "Build complete. Zip archives in ${BUILD_DIR}/:"
+  ls -lh "${BUILD_DIR}/"*.zip 2>/dev/null | grep -v "^total" || true
 }
 
 cmd_windows() {

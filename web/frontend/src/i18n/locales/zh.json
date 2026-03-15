@@ -391,6 +391,12 @@
   "pages": {
     "config": {
       "load_error": "加载配置失败，请刷新后重试。",
+      "section_agent_defaults": "智能体配置",
+      "section_runtime": "运行时",
+      "section_service": "服务",
+      "section_network": "网络",
+      "section_devices": "设备与启动",
+      "section_advanced": "高级",
       "workspace": "工作目录",
       "workspace_hint": "智能体执行文件读写操作时使用的基础目录。",
       "restrict_workspace": "限制工作目录访问",
@@ -449,7 +455,9 @@
       "format_success": "JSON 格式化成功。",
       "format_error": "JSON 格式无效。",
       "format": "格式化",
-      "unsaved_changes": "您有未保存的更改。"
+      "unsaved_changes": "您有未保存的更改。",
+      "auth_proxy": "认证代理",
+      "auth_proxy_hint": "用于 OAuth 登录流程（如 Codex）的 HTTP/SOCKS5 代理，适用于网络受限的环境（如 Windows 代理）。"
     },
     "logs": {
       "description": "系统日志和监控。"

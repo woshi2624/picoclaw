@@ -1,6 +1,5 @@
-import { IconCode, IconDeviceFloppy } from "@tabler/icons-react"
+import { IconDeviceFloppy } from "@tabler/icons-react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { Link } from "@tanstack/react-router"
 import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
@@ -15,8 +14,10 @@ import {
 import {
   AdvancedSection,
   AgentDefaultsSection,
+  CollapsibleSection,
   DevicesSection,
   LauncherSection,
+  NetworkSection,
   RuntimeSection,
 } from "@/components/config/config-sections"
 import {
@@ -30,7 +31,6 @@ import {
 } from "@/components/config/form-model"
 import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
-import { Separator } from "@/components/ui/separator"
 
 export function ConfigPage() {
   const { t } = useTranslation()
@@ -197,6 +197,9 @@ export function ConfigPage() {
             enabled: form.devicesEnabled,
             monitor_usb: form.monitorUSB,
           },
+          auth: {
+            proxy: form.authProxy.trim(),
+          },
         })
 
         setBaseline(form)
@@ -253,14 +256,6 @@ export function ConfigPage() {
     <div className="flex h-full flex-col">
       <PageHeader
         title={t("navigation.config")}
-        children={
-          <Button variant="outline" asChild>
-            <Link to="/config/raw">
-              <IconCode className="size-4" />
-              {t("pages.config.open_raw")}
-            </Link>
-          </Button>
-        }
       />
       <div className="flex-1 overflow-auto p-3 lg:p-6">
         <div className="mx-auto w-full max-w-[1000px] space-y-6">
@@ -273,49 +268,57 @@ export function ConfigPage() {
               {t("pages.config.load_error")}
             </div>
           ) : (
-            <div className="space-y-6">
+            <div className="space-y-1">
               {isDirty && (
-                <div className="bg-yellow-50 px-3 py-2 text-sm text-yellow-700">
+                <div className="mb-4 bg-yellow-50 px-3 py-2 text-sm text-yellow-700">
                   {t("pages.config.unsaved_changes")}
                 </div>
               )}
 
-              <AgentDefaultsSection form={form} onFieldChange={updateField} />
+              <CollapsibleSection
+                title={t("pages.config.section_agent_defaults")}
+              >
+                <AgentDefaultsSection form={form} onFieldChange={updateField} />
+              </CollapsibleSection>
 
-              <Separator />
+              <CollapsibleSection title={t("pages.config.section_runtime")}>
+                <RuntimeSection form={form} onFieldChange={updateField} />
+              </CollapsibleSection>
 
-              <RuntimeSection form={form} onFieldChange={updateField} />
+              <CollapsibleSection title={t("pages.config.section_service")}>
+                <LauncherSection
+                  launcherForm={launcherForm}
+                  onFieldChange={updateLauncherField}
+                  launcherHint={launcherHint}
+                  disabled={saving || isLauncherLoading}
+                />
+              </CollapsibleSection>
 
-              <Separator />
+              <CollapsibleSection title={t("pages.config.section_network")}>
+                <NetworkSection form={form} onFieldChange={updateField} />
+              </CollapsibleSection>
 
-              <LauncherSection
-                launcherForm={launcherForm}
-                onFieldChange={updateLauncherField}
-                launcherHint={launcherHint}
-                disabled={saving || isLauncherLoading}
-              />
+              <CollapsibleSection title={t("pages.config.section_devices")}>
+                <DevicesSection
+                  form={form}
+                  onFieldChange={updateField}
+                  autoStartEnabled={autoStartEnabled}
+                  autoStartHint={autoStartHint}
+                  autoStartDisabled={
+                    isAutoStartLoading ||
+                    Boolean(autoStartError) ||
+                    !autoStartSupported ||
+                    saving
+                  }
+                  onAutoStartChange={setAutoStartEnabled}
+                />
+              </CollapsibleSection>
 
-              <Separator />
+              <CollapsibleSection title={t("pages.config.section_advanced")}>
+                <AdvancedSection />
+              </CollapsibleSection>
 
-              <DevicesSection
-                form={form}
-                onFieldChange={updateField}
-                autoStartEnabled={autoStartEnabled}
-                autoStartHint={autoStartHint}
-                autoStartDisabled={
-                  isAutoStartLoading ||
-                  Boolean(autoStartError) ||
-                  !autoStartSupported ||
-                  saving
-                }
-                onAutoStartChange={setAutoStartEnabled}
-              />
-
-              <Separator />
-
-              <AdvancedSection />
-
-              <div className="flex justify-end gap-2">
+              <div className="flex justify-end gap-2 pt-4">
                 <Button
                   variant="outline"
                   onClick={handleReset}

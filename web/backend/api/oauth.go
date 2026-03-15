@@ -72,8 +72,29 @@ var (
 	oauthLoadConfig               = config.LoadConfig
 	oauthSaveConfig               = config.SaveConfig
 	oauthFetchAntigravityProject  = providers.FetchAntigravityProjectID
-	oauthFetchGoogleUserEmailFunc = fetchGoogleUserEmail
+	oauthFetchGoogleUserEmailFunc func(accessToken string, client *http.Client) (string, error) = fetchGoogleUserEmail
 )
+// oauthHTTPClient builds an http.Client for OAuth calls, applying the proxy
+// from cfg.Auth.Proxy when set. Returns nil if no proxy is configured (auth
+// package will fall back to http.DefaultClient).
+func (h *Handler) oauthHTTPClient() *http.Client {
+	cfg, err := oauthLoadConfig(h.configPath)
+	if err != nil || cfg.Auth.Proxy == "" {
+		return nil
+	}
+	return auth.NewHTTPClientWithProxy(cfg.Auth.Proxy)
+}
+
+// buildOAuthProviderConfig returns the OAuthProviderConfig for a provider
+// with the proxy-aware HTTP client injected.
+func (h *Handler) buildOAuthProviderConfig(provider string) (auth.OAuthProviderConfig, error) {
+	cfg, err := oauthConfigForProvider(provider)
+	if err != nil {
+		return auth.OAuthProviderConfig{}, err
+	}
+	cfg.HTTPClient = h.oauthHTTPClient()
+	return cfg, nil
+}
 
 type oauthFlow struct {
 	ID           string
@@ -236,6 +257,7 @@ func (h *Handler) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 
 	case oauthMethodDeviceCode:
 		cfg := auth.OpenAIOAuthConfig()
+		cfg.HTTPClient = h.oauthHTTPClient()
 		info, err := oauthRequestDeviceCode(cfg)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("failed to request device code: %v", err), http.StatusInternalServerError)
@@ -272,7 +294,7 @@ func (h *Handler) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case oauthMethodBrowser:
-		cfg, err := oauthConfigForProvider(provider)
+		cfg, err := h.buildOAuthProviderConfig(provider)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -370,6 +392,7 @@ func (h *Handler) handlePollOAuthFlow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := auth.OpenAIOAuthConfig()
+	cfg.HTTPClient = h.oauthHTTPClient()
 	cred, err := oauthPollDeviceCodeOnce(cfg, flow.DeviceAuthID, flow.UserCode)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "pending") {
@@ -439,7 +462,7 @@ func (h *Handler) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg, err := oauthConfigForProvider(flow.Provider)
+	cfg, err := h.buildOAuthProviderConfig(flow.Provider)
 	if err != nil {
 		h.setOAuthFlowError(flow.ID, err.Error())
 		renderOAuthCallbackPage(w, flow.ID, oauthFlowError, "Unsupported provider", err.Error())
@@ -785,7 +808,7 @@ func (h *Handler) persistCredentialAndConfig(provider, authMethod string, cred *
 
 	if provider == oauthProviderGoogleAntigravity {
 		if cp.Email == "" {
-			email, err := oauthFetchGoogleUserEmailFunc(cp.AccessToken)
+			email, err := oauthFetchGoogleUserEmailFunc(cp.AccessToken, h.oauthHTTPClient())
 			if err != nil {
 				log.Printf("oauth warning: could not fetch google email: %v", err)
 			} else {
@@ -885,14 +908,18 @@ func defaultModelConfigForProvider(provider, authMethod string) config.ModelConf
 	}
 }
 
-func fetchGoogleUserEmail(accessToken string) (string, error) {
+func fetchGoogleUserEmail(accessToken string, client *http.Client) (string, error) {
 	req, err := http.NewRequest(http.MethodGet, "https://www.googleapis.com/oauth2/v2/userinfo", nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	} else {
+		client = &http.Client{Transport: client.Transport, Timeout: 10 * time.Second}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err

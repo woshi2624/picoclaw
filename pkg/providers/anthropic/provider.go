@@ -265,6 +265,16 @@ func buildParams(
 					blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
 				}
 				for _, tc := range msg.ToolCalls {
+					toolName := tc.Name
+					if toolName == "" && tc.Function != nil {
+						toolName = tc.Function.Name
+					}
+					if toolName == "" {
+						logger.WarnCF("provider.anthropic", "Skipping tool call with empty name in history", map[string]any{
+							"tool_call_id": tc.ID,
+						})
+						continue
+					}
 					args := tc.Arguments
 					if args == nil && tc.Function != nil && tc.Function.Arguments != "" {
 						if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
@@ -274,7 +284,7 @@ func buildParams(
 					if args == nil {
 						args = map[string]any{}
 					}
-					blocks = append(blocks, anthropic.NewToolUseBlock(tc.ID, args, tc.Name))
+					blocks = append(blocks, anthropic.NewToolUseBlock(tc.ID, args, toolName))
 				}
 				anthropicMessages = append(anthropicMessages, anthropic.NewAssistantMessage(blocks...))
 			} else {

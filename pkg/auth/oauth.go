@@ -28,6 +28,32 @@ type OAuthProviderConfig struct {
 	Scopes       string
 	Originator   string
 	Port         int
+	HTTPClient   *http.Client // Optional: use a custom HTTP client (e.g. with proxy)
+}
+
+// httpClient returns the configured HTTP client or http.DefaultClient.
+func (cfg OAuthProviderConfig) httpClient() *http.Client {
+	if cfg.HTTPClient != nil {
+		return cfg.HTTPClient
+	}
+	return http.DefaultClient
+}
+
+// NewHTTPClientWithProxy creates an http.Client configured to route traffic
+// through the given proxy URL. Returns http.DefaultClient if proxyURL is empty.
+func NewHTTPClientWithProxy(proxyURL string) *http.Client {
+	if proxyURL == "" {
+		return http.DefaultClient
+	}
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return http.DefaultClient
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(parsed),
+		},
+	}
 }
 
 func OpenAIOAuthConfig() OAuthProviderConfig {
@@ -202,7 +228,7 @@ func RequestDeviceCode(cfg OAuthProviderConfig) (*DeviceCodeInfo, error) {
 		"client_id": cfg.ClientID,
 	})
 
-	resp, err := http.Post(
+	resp, err := cfg.httpClient().Post(
 		cfg.Issuer+"/api/accounts/deviceauth/usercode",
 		"application/json",
 		strings.NewReader(string(reqBody)),
@@ -293,7 +319,7 @@ func LoginDeviceCode(cfg OAuthProviderConfig) (*AuthCredential, error) {
 		"client_id": cfg.ClientID,
 	})
 
-	resp, err := http.Post(
+	resp, err := cfg.httpClient().Post(
 		cfg.Issuer+"/api/accounts/deviceauth/usercode",
 		"application/json",
 		strings.NewReader(string(reqBody)),
@@ -352,7 +378,7 @@ func pollDeviceCode(cfg OAuthProviderConfig, deviceAuthID, userCode string) (*Au
 		"user_code":      userCode,
 	})
 
-	resp, err := http.Post(
+	resp, err := cfg.httpClient().Post(
 		cfg.Issuer+"/api/accounts/deviceauth/token",
 		"application/json",
 		strings.NewReader(string(reqBody)),
@@ -404,7 +430,7 @@ func RefreshAccessToken(cred *AuthCredential, cfg OAuthProviderConfig) (*AuthCre
 		tokenURL = cfg.TokenURL
 	}
 
-	resp, err := http.PostForm(tokenURL, data)
+	resp, err := cfg.httpClient().PostForm(tokenURL, data)
 	if err != nil {
 		return nil, fmt.Errorf("refreshing token: %w", err)
 	}
@@ -500,7 +526,7 @@ func ExchangeCodeForTokens(cfg OAuthProviderConfig, code, codeVerifier, redirect
 		provider = "google-antigravity"
 	}
 
-	resp, err := http.PostForm(tokenURL, data)
+	resp, err := cfg.httpClient().PostForm(tokenURL, data)
 	if err != nil {
 		return nil, fmt.Errorf("exchanging code for tokens: %w", err)
 	}

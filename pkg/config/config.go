@@ -59,8 +59,14 @@ type Config struct {
 	Tools     ToolsConfig     `json:"tools"`
 	Heartbeat HeartbeatConfig `json:"heartbeat"`
 	Devices   DevicesConfig   `json:"devices"`
+	Auth      AuthConfig      `json:"auth,omitempty"`
 	// BuildInfo contains build-time version information
 	BuildInfo BuildInfo `json:"build_info,omitempty"`
+}
+
+// AuthConfig holds authentication-related settings such as proxy for OAuth flows.
+type AuthConfig struct {
+	Proxy string `json:"proxy,omitempty" env:"PICOCLAW_AUTH_PROXY"`
 }
 
 // BuildInfo contains build-time version information

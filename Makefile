@@ -167,7 +167,7 @@ build-linux-mipsle: generate
 build-pi-zero: build-linux-arm build-linux-arm64
 	@echo "Pi Zero 2 W builds: $(BUILD_DIR)/$(BINARY_NAME)-linux-arm (32-bit), $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 (64-bit)"
 
-## build-all: Build picoclaw for all platforms
+## build-all: Build picoclaw for all platforms and package into zip archives
 build-all: generate
 	@echo "Building for multiple platforms..."
 	@mkdir -p $(BUILD_DIR)
@@ -181,7 +181,21 @@ build-all: generate
 	GOOS=linux GOARCH=arm GOARM=7 $(GO) build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-armv7 ./$(CMD_DIR)
 	GOOS=darwin GOARCH=arm64 $(GO) build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 ./$(CMD_DIR)
 	GOOS=windows GOARCH=amd64 $(GO) build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe ./$(CMD_DIR)
-	@echo "All builds complete"
+	@echo "All builds complete. Packaging zip archives..."
+	@for platform in linux-amd64 linux-arm linux-arm64 linux-armv7 linux-loong64 linux-riscv64 linux-mipsle darwin-arm64; do \
+		mkdir -p "$(BUILD_DIR)/.stage/$(BINARY_NAME)-$$platform" && \
+		cp "$(BUILD_DIR)/$(BINARY_NAME)-$$platform" "$(BUILD_DIR)/.stage/$(BINARY_NAME)-$$platform/$(BINARY_NAME)" && \
+		(cd "$(BUILD_DIR)/.stage" && zip -r "../$(BINARY_NAME)-$$platform.zip" "$(BINARY_NAME)-$$platform/") && \
+		rm -rf "$(BUILD_DIR)/.stage/$(BINARY_NAME)-$$platform" && \
+		echo "  Packaged: $(BUILD_DIR)/$(BINARY_NAME)-$$platform.zip"; \
+	done
+	@mkdir -p "$(BUILD_DIR)/.stage/$(BINARY_NAME)-windows-amd64" && \
+	cp "$(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe" "$(BUILD_DIR)/.stage/$(BINARY_NAME)-windows-amd64/$(BINARY_NAME).exe" && \
+	(cd "$(BUILD_DIR)/.stage" && zip -r "../$(BINARY_NAME)-windows-amd64.zip" "$(BINARY_NAME)-windows-amd64/") && \
+	rm -rf "$(BUILD_DIR)/.stage/$(BINARY_NAME)-windows-amd64" && \
+	echo "  Packaged: $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.zip"
+	@rm -rf "$(BUILD_DIR)/.stage"
+	@echo "All zip archives created in $(BUILD_DIR)/"
 
 ## install: Install picoclaw to system and copy builtin skills
 install: build

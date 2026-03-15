@@ -1,5 +1,6 @@
-import { IconCode } from "@tabler/icons-react"
+import { IconChevronDown, IconCode } from "@tabler/icons-react"
 import { Link } from "@tanstack/react-router"
+import { useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import {
@@ -9,6 +10,11 @@ import {
 } from "@/components/config/form-model"
 import { Field, SwitchCardField } from "@/components/shared-form"
 import { Button } from "@/components/ui/button"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -18,6 +24,36 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { cn } from "@/lib/utils"
+
+interface CollapsibleSectionProps {
+  title: string
+  children: React.ReactNode
+  defaultOpen?: boolean
+}
+
+export function CollapsibleSection({
+  title,
+  children,
+  defaultOpen = false,
+}: CollapsibleSectionProps) {
+  const [open, setOpen] = useState(defaultOpen ?? false)
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger className="flex w-full items-center justify-between rounded-md px-1 py-2 text-sm font-semibold transition-colors hover:bg-accent/50">
+        <span>{title}</span>
+        <IconChevronDown
+          className={cn(
+            "text-muted-foreground size-4 transition-transform duration-200",
+            open && "rotate-180",
+          )}
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="pt-3">{children}</CollapsibleContent>
+    </Collapsible>
+  )
+}
 
 type UpdateCoreField = <K extends keyof CoreConfigForm>(
   key: K,
@@ -320,6 +356,32 @@ export function AdvancedSection() {
             {t("pages.config.open_raw")}
           </Link>
         </Button>
+      </div>
+    </section>
+  )
+}
+
+interface NetworkSectionProps {
+  form: CoreConfigForm
+  onFieldChange: UpdateCoreField
+}
+
+export function NetworkSection({ form, onFieldChange }: NetworkSectionProps) {
+  const { t } = useTranslation()
+
+  return (
+    <section className="space-y-3">
+      <div className="space-y-4">
+        <Field
+          label={t("pages.config.auth_proxy")}
+          hint={t("pages.config.auth_proxy_hint")}
+        >
+          <Input
+            value={form.authProxy}
+            onChange={(e) => onFieldChange("authProxy", e.target.value)}
+            placeholder="http://127.0.0.1:7890"
+          />
+        </Field>
       </div>
     </section>
   )

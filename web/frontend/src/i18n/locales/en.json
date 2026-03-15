@@ -391,6 +391,12 @@
   "pages": {
     "config": {
       "load_error": "Failed to load configuration. Please refresh and try again.",
+      "section_agent_defaults": "Agent Defaults",
+      "section_runtime": "Runtime",
+      "section_service": "Service",
+      "section_network": "Network",
+      "section_devices": "Devices & Startup",
+      "section_advanced": "Advanced",
       "workspace": "Workspace Directory",
       "workspace_hint": "Base directory for agent file operations.",
       "restrict_workspace": "Restrict to Workspace",
@@ -449,7 +455,9 @@
       "format_success": "JSON formatted successfully.",
       "format_error": "Invalid JSON format.",
       "format": "Format",
-      "unsaved_changes": "You have unsaved changes."
+      "unsaved_changes": "You have unsaved changes.",
+      "auth_proxy": "Auth Proxy",
+      "auth_proxy_hint": "HTTP/SOCKS5 proxy for OAuth login flows (e.g. Codex). Useful on networks that restrict direct access."
     },
     "logs": {
       "description": "System logs and monitoring."

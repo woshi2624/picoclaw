@@ -12,6 +12,7 @@ export interface CoreConfigForm {
   heartbeatInterval: string
   devicesEnabled: boolean
   monitorUSB: boolean
+  authProxy: string
 }
 
 export interface LauncherForm {
@@ -63,6 +64,7 @@ export const EMPTY_FORM: CoreConfigForm = {
   heartbeatInterval: "30",
   devicesEnabled: false,
   monitorUSB: true,
+  authProxy: "",
 }
 
 export const EMPTY_LAUNCHER_FORM: LauncherForm = {
@@ -103,6 +105,7 @@ export function buildFormFromConfig(config: unknown): CoreConfigForm {
   const session = asRecord(root.session)
   const heartbeat = asRecord(root.heartbeat)
   const devices = asRecord(root.devices)
+  const authCfg = asRecord(root.auth)
 
   return {
     workspace: asString(defaults.workspace) || EMPTY_FORM.workspace,
@@ -140,6 +143,7 @@ export function buildFormFromConfig(config: unknown): CoreConfigForm {
       devices.monitor_usb === undefined
         ? EMPTY_FORM.monitorUSB
         : asBool(devices.monitor_usb),
+    authProxy: asString(authCfg.proxy),
   }
 }
 

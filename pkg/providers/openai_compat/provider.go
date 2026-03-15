@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
 
@@ -384,7 +385,7 @@ func serializeMessages(messages []Message) []any {
 				Role:             m.Role,
 				Content:          m.Content,
 				ReasoningContent: m.ReasoningContent,
-				ToolCalls:        m.ToolCalls,
+				ToolCalls:        filterValidToolCalls(m.ToolCalls),
 				ToolCallID:       m.ToolCallID,
 			})
 			continue
@@ -416,8 +417,9 @@ func serializeMessages(messages []Message) []any {
 		if m.ToolCallID != "" {
 			msg["tool_call_id"] = m.ToolCallID
 		}
-		if len(m.ToolCalls) > 0 {
-			msg["tool_calls"] = m.ToolCalls
+		validCalls := filterValidToolCalls(m.ToolCalls)
+		if len(validCalls) > 0 {
+			msg["tool_calls"] = validCalls
 		}
 		if m.ReasoningContent != "" {
 			msg["reasoning_content"] = m.ReasoningContent
@@ -425,6 +427,41 @@ func serializeMessages(messages []Message) []any {
 		out = append(out, msg)
 	}
 	return out
+}
+
+// filterValidToolCalls removes tool calls with no resolvable function name.
+// OpenAI-compatible APIs require a non-empty function name in each tool call.
+// If the internal Name field is set but Function is nil, a FunctionCall is
+// reconstructed so the name survives JSON serialization.
+func filterValidToolCalls(toolCalls []ToolCall) []ToolCall {
+	if len(toolCalls) == 0 {
+		return toolCalls
+	}
+	valid := make([]ToolCall, 0, len(toolCalls))
+	for _, tc := range toolCalls {
+		name := tc.Name
+		if name == "" && tc.Function != nil {
+			name = tc.Function.Name
+		}
+		if name == "" {
+			logger.WarnCF("provider.openai_compat", "Skipping tool call with empty name in history", map[string]any{
+				"tool_call_id": tc.ID,
+			})
+			continue
+		}
+		// Ensure Function.Name is set so it serializes correctly.
+		if tc.Function == nil {
+			args := ""
+			if len(tc.Arguments) > 0 {
+				if b, err := json.Marshal(tc.Arguments); err == nil {
+					args = string(b)
+				}
+			}
+			tc.Function = &protocoltypes.FunctionCall{Name: name, Arguments: args}
+		}
+		valid = append(valid, tc)
+	}
+	return valid
 }
 
 func normalizeModel(model, apiBase string) string {
