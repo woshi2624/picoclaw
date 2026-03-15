@@ -157,7 +157,7 @@ func TestParseResponse_ThinkingBlock(t *testing.T) {
 			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
 	)
 
-	result, err := parseAnthropicSSE(sse)
+	result, err := parseAnthropicSSE(sse, nil)
 	if err != nil {
 		t.Fatalf("parseAnthropicSSE error: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestParseResponse_NoThinkingBlock(t *testing.T) {
 			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
 	)
 
-	result, err := parseAnthropicSSE(sse)
+	result, err := parseAnthropicSSE(sse, nil)
 	if err != nil {
 		t.Fatalf("parseAnthropicSSE error: %v", err)
 	}

@@ -1,5 +1,9 @@
 package protocoltypes
 
+// TokenCallback is called for each text token as it streams from the LLM.
+// delta is the new chunk; accumulated is the full text so far.
+type TokenCallback func(delta string, accumulated string)
+
 type ToolCall struct {
 	ID               string         `json:"id"`
 	Type             string         `json:"type,omitempty"`

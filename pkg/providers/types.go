@@ -19,6 +19,7 @@ type (
 	GoogleExtra            = protocoltypes.GoogleExtra
 	ContentBlock           = protocoltypes.ContentBlock
 	CacheControl           = protocoltypes.CacheControl
+	TokenCallback          = protocoltypes.TokenCallback
 )
 
 type LLMProvider interface {
@@ -42,6 +43,19 @@ type StatefulProvider interface {
 // when thinking_level is configured but the active provider cannot use it.
 type ThinkingCapable interface {
 	SupportsThinking() bool
+}
+
+// StreamingCapable is an optional interface for providers that can stream
+// text tokens incrementally via a callback instead of waiting for the full response.
+type StreamingCapable interface {
+	ChatStream(
+		ctx context.Context,
+		messages []Message,
+		tools []ToolDefinition,
+		model string,
+		options map[string]any,
+		onToken TokenCallback,
+	) (*LLMResponse, error)
 }
 
 // FailoverReason classifies why an LLM request failed for fallback decisions.

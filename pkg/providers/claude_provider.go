@@ -55,6 +55,14 @@ func (p *ClaudeProvider) GetDefaultModel() string {
 	return p.delegate.GetDefaultModel()
 }
 
+// ChatStream implements StreamingCapable by delegating to the underlying anthropic.Provider.
+func (p *ClaudeProvider) ChatStream(
+	ctx context.Context, messages []Message, tools []ToolDefinition, model string, options map[string]any,
+	onToken TokenCallback,
+) (*LLMResponse, error) {
+	return p.delegate.ChatStream(ctx, messages, tools, model, options, onToken)
+}
+
 func createClaudeTokenSource() func() (string, error) {
 	return func() (string, error) {
 		cred, err := getCredential("anthropic")

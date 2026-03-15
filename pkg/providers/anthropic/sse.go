@@ -12,7 +12,8 @@ import (
 
 // parseAnthropicSSE reads an Anthropic SSE streaming response and accumulates
 // the events into an LLMResponse, matching the behaviour of the SDK accumulator.
-func parseAnthropicSSE(r io.Reader) (*LLMResponse, error) {
+// onToken is called for each text_delta chunk; pass nil to disable streaming callbacks.
+func parseAnthropicSSE(r io.Reader, onToken func(delta, accumulated string)) (*LLMResponse, error) {
 	type toolState struct {
 		id    string
 		name  string
@@ -87,6 +88,9 @@ func parseAnthropicSSE(r io.Reader) (*LLMResponse, error) {
 			switch e.Delta.Type {
 			case "text_delta":
 				content.WriteString(e.Delta.Text)
+				if onToken != nil {
+					onToken(e.Delta.Text, content.String())
+				}
 			case "thinking_delta":
 				reasoning.WriteString(e.Delta.Thinking)
 			case "input_json_delta":

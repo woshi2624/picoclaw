@@ -89,12 +89,37 @@ func (p *Provider) Chat(
 		logAnthropicRequest(p.baseURL, params, true, requestHeadersForAPIKey(p.apiKey))
 	}
 
-	return p.chatStreaming(ctx, params)
+	return p.chatStreamingWithCallback(ctx, params, nil)
 }
 
-func (p *Provider) chatStreaming(
+// ChatStream implements providers.StreamingCapable.
+// It calls the LLM with streaming enabled and invokes onToken for each text delta.
+func (p *Provider) ChatStream(
+	ctx context.Context,
+	messages []Message,
+	tools []ToolDefinition,
+	model string,
+	options map[string]any,
+	onToken protocoltypes.TokenCallback,
+) (*LLMResponse, error) {
+	params, err := buildParams(messages, tools, model, options)
+	if err != nil {
+		return nil, err
+	}
+
+	if p.tokenSource != nil {
+		logAnthropicRequest(p.baseURL, params, true, requestHeadersForAuthToken(""))
+	} else {
+		logAnthropicRequest(p.baseURL, params, true, requestHeadersForAPIKey(p.apiKey))
+	}
+
+	return p.chatStreamingWithCallback(ctx, params, onToken)
+}
+
+func (p *Provider) chatStreamingWithCallback(
 	ctx context.Context,
 	params anthropic.MessageNewParams,
+	onToken protocoltypes.TokenCallback,
 ) (*LLMResponse, error) {
 	const maxAttempts = 3
 	var lastErr error
@@ -108,7 +133,7 @@ func (p *Provider) chatStreaming(
 			}
 		}
 
-		resp, err := p.doHTTPStreaming(ctx, params)
+		resp, err := p.doHTTPStreaming(ctx, params, onToken)
 		if err == nil {
 			return resp, nil
 		}
@@ -131,7 +156,7 @@ func (p *Provider) chatStreaming(
 //
 // This avoids SDK-injected headers (X-Stainless-*, User-Agent, etc.) that some
 // proxy relays reject with 403.
-func (p *Provider) doHTTPStreaming(ctx context.Context, params anthropic.MessageNewParams) (*LLMResponse, error) {
+func (p *Provider) doHTTPStreaming(ctx context.Context, params anthropic.MessageNewParams, onToken protocoltypes.TokenCallback) (*LLMResponse, error) {
 	bodyStr, err := marshalAnthropicRequestBody(params, true)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling request: %w", err)
@@ -170,7 +195,7 @@ func (p *Provider) doHTTPStreaming(ctx context.Context, params anthropic.Message
 		}
 	}
 
-	return parseAnthropicSSE(resp.Body)
+	return parseAnthropicSSE(resp.Body, onToken)
 }
 
 // proxyHTTPError is returned when the relay/proxy responds with a non-200 status.

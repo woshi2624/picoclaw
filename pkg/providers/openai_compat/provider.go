@@ -476,3 +476,236 @@ func asFloat(v any) (float64, bool) {
 		return 0, false
 	}
 }
+
+// ChatStream implements providers.StreamingCapable.
+// Sends the request with stream:true and invokes onToken for each text delta.
+func (p *Provider) ChatStream(
+	ctx context.Context,
+	messages []Message,
+	tools []ToolDefinition,
+	model string,
+	options map[string]any,
+	onToken protocoltypes.TokenCallback,
+) (*LLMResponse, error) {
+	if p.apiBase == "" {
+		return nil, fmt.Errorf("API base not configured")
+	}
+
+	model = normalizeModel(model, p.apiBase)
+
+	requestBody := map[string]any{
+		"model":          model,
+		"messages":       serializeMessages(messages),
+		"stream":         true,
+		"stream_options": map[string]any{"include_usage": true},
+	}
+
+	if len(tools) > 0 {
+		requestBody["tools"] = tools
+		requestBody["tool_choice"] = "auto"
+	}
+
+	if maxTokens, ok := asInt(options["max_tokens"]); ok {
+		fieldName := p.maxTokensField
+		if fieldName == "" {
+			lowerModel := strings.ToLower(model)
+			if strings.Contains(lowerModel, "glm") || strings.Contains(lowerModel, "o1") ||
+				strings.Contains(lowerModel, "gpt-5") {
+				fieldName = "max_completion_tokens"
+			} else {
+				fieldName = "max_tokens"
+			}
+		}
+		requestBody[fieldName] = maxTokens
+	}
+
+	if temperature, ok := asFloat(options["temperature"]); ok {
+		lowerModel := strings.ToLower(model)
+		if strings.Contains(lowerModel, "kimi") && strings.Contains(lowerModel, "k2") {
+			requestBody["temperature"] = 1.0
+		} else {
+			requestBody["temperature"] = temperature
+		}
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", p.apiBase+"/chat/completions", bytes.NewReader(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	if p.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+
+	// Use a client without a short timeout for streaming (the timeout would fire mid-stream).
+	streamClient := &http.Client{Transport: p.httpClient.Transport}
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	contentType := resp.Header.Get("Content-Type")
+
+	if resp.StatusCode != http.StatusOK {
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 256))
+		if readErr != nil {
+			return nil, fmt.Errorf("failed to read response: %w", readErr)
+		}
+		if looksLikeHTML(body, contentType) {
+			return nil, wrapHTMLResponseError(resp.StatusCode, body, contentType, p.apiBase)
+		}
+		return nil, fmt.Errorf(
+			"API request failed:\n  Status: %d\n  Body:   %s",
+			resp.StatusCode,
+			responsePreview(body, 128),
+		)
+	}
+
+	// If the server didn't respond with SSE, fall back to non-streaming parse.
+	if !strings.Contains(contentType, "text/event-stream") {
+		reader := bufio.NewReader(resp.Body)
+		return parseResponse(reader)
+	}
+
+	return parseOpenAISSE(resp.Body, onToken)
+}
+
+// parseOpenAISSE reads an OpenAI-compatible SSE stream and accumulates it into an LLMResponse.
+// onToken is called for each content delta; pass nil to disable callbacks.
+func parseOpenAISSE(r io.Reader, onToken protocoltypes.TokenCallback) (*LLMResponse, error) {
+	type toolState struct {
+		id        string
+		name      string
+		arguments strings.Builder
+	}
+
+	var (
+		content          strings.Builder
+		reasoningContent strings.Builder
+		toolStates       = map[int]*toolState{}
+		finishReason     string
+		usage            *UsageInfo
+	)
+
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 1<<17), 1<<17)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		data, ok := strings.CutPrefix(line, "data: ")
+		if !ok {
+			continue
+		}
+		if data == "[DONE]" {
+			break
+		}
+
+		var frame struct {
+			Choices []struct {
+				Delta struct {
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
+					ToolCalls        []struct {
+						Index    int    `json:"index"`
+						ID       string `json:"id"`
+						Function *struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+				FinishReason string `json:"finish_reason"`
+			} `json:"choices"`
+			Usage *UsageInfo `json:"usage"`
+		}
+
+		if err := json.Unmarshal([]byte(data), &frame); err != nil {
+			continue // skip malformed frames
+		}
+
+		if frame.Usage != nil {
+			usage = frame.Usage
+		}
+
+		if len(frame.Choices) == 0 {
+			continue
+		}
+
+		choice := frame.Choices[0]
+		if choice.FinishReason != "" {
+			finishReason = choice.FinishReason
+		}
+
+		if txt := choice.Delta.Content; txt != "" {
+			content.WriteString(txt)
+			if onToken != nil {
+				onToken(txt, content.String())
+			}
+		}
+
+		if rc := choice.Delta.ReasoningContent; rc != "" {
+			reasoningContent.WriteString(rc)
+		}
+
+		for _, tc := range choice.Delta.ToolCalls {
+			ts, exists := toolStates[tc.Index]
+			if !exists {
+				ts = &toolState{}
+				toolStates[tc.Index] = ts
+			}
+			if tc.ID != "" {
+				ts.id = tc.ID
+			}
+			if tc.Function != nil {
+				if tc.Function.Name != "" {
+					ts.name = tc.Function.Name
+				}
+				ts.arguments.WriteString(tc.Function.Arguments)
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading OpenAI SSE stream: %w", err)
+	}
+
+	// Build tool calls sorted by index for deterministic ordering.
+	var toolCalls []ToolCall
+	for i := 0; i < len(toolStates); i++ {
+		ts, ok := toolStates[i]
+		if !ok {
+			continue
+		}
+		arguments := make(map[string]any)
+		if argStr := ts.arguments.String(); argStr != "" {
+			if err := json.Unmarshal([]byte(argStr), &arguments); err != nil {
+				log.Printf("openai_compat: failed to decode streaming tool call arguments for %q: %v", ts.name, err)
+				arguments["raw"] = argStr
+			}
+		}
+		toolCalls = append(toolCalls, ToolCall{
+			ID:        ts.id,
+			Name:      ts.name,
+			Arguments: arguments,
+		})
+	}
+
+	if finishReason == "" {
+		finishReason = "stop"
+	}
+
+	return &LLMResponse{
+		Content:          content.String(),
+		ReasoningContent: reasoningContent.String(),
+		ToolCalls:        toolCalls,
+		FinishReason:     finishReason,
+		Usage:            usage,
+	}, nil
+}

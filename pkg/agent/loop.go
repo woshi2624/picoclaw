@@ -940,6 +940,28 @@ func (al *AgentLoop) runLLMIteration(
 	// tool chain doesn't switch models mid-way through.
 	activeCandidates, activeModel := al.selectCandidates(agent, opts.UserMessage, messages)
 
+	// Detect streaming capability for single-provider, user-facing channels.
+	// Multiple candidates use the fallback chain which doesn't support streaming.
+	// Note: SendResponse may be false (response sent by caller via PublishOutbound),
+	// so we check channel capability directly rather than gating on SendResponse.
+	var streamingProvider providers.StreamingCapable
+	var streamSource channels.StreamSource
+	var streamEditor channels.MessageEditor
+	if len(activeCandidates) <= 1 && al.channelManager != nil &&
+		!constants.IsInternalChannel(opts.Channel) {
+		if ch, ok := al.channelManager.GetChannel(opts.Channel); ok {
+			if src, ok2 := ch.(channels.StreamSource); ok2 {
+				if ed, ok3 := ch.(channels.MessageEditor); ok3 {
+					if sp, ok4 := agent.Provider.(providers.StreamingCapable); ok4 {
+						streamingProvider = sp
+						streamSource = src
+						streamEditor = ed
+					}
+				}
+			}
+		}
+	}
+
 	for iteration < agent.MaxIterations {
 		iteration++
 
@@ -1036,7 +1058,32 @@ func (al *AgentLoop) runLLMIteration(
 		// Retry loop for context/token errors
 		maxRetries := 2
 		for retry := 0; retry <= maxRetries; retry++ {
-			response, err = callLLM()
+			if streamingProvider != nil && iteration == 1 {
+				const throttle = 50 * time.Millisecond
+				var streamMsgID string
+				var msgCreated bool
+				var lastUpdate time.Time
+
+				response, err = streamingProvider.ChatStream(
+					ctx, messages, providerToolDefs, activeModel, llmOpts,
+					func(delta, accumulated string) {
+						if !msgCreated {
+							msgID, cerr := streamSource.CreateStreamingMessage(ctx, opts.ChatID)
+							if cerr == nil && msgID != "" {
+								streamMsgID = msgID
+								al.channelManager.RecordPlaceholder(opts.Channel, opts.ChatID, msgID)
+							}
+							msgCreated = true
+						}
+						if streamMsgID != "" && time.Since(lastUpdate) >= throttle {
+							_ = streamEditor.EditMessage(ctx, opts.ChatID, streamMsgID, accumulated)
+							lastUpdate = time.Now()
+						}
+					},
+				)
+			} else {
+				response, err = callLLM()
+			}
 			if err == nil {
 				break
 			}

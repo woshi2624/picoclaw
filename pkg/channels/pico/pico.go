@@ -197,6 +197,21 @@ func (c *PicoChannel) SendPlaceholder(ctx context.Context, chatID string) (strin
 	return msgID, nil
 }
 
+// CreateStreamingMessage implements channels.StreamSource.
+// It sends an empty message create event so the front-end can display the bubble
+// immediately; subsequent EditMessage calls fill it in with streamed tokens.
+func (c *PicoChannel) CreateStreamingMessage(ctx context.Context, chatID string) (string, error) {
+	msgID := uuid.New().String()
+	outMsg := newMessage(TypeMessageCreate, map[string]any{
+		"content":    "",
+		"message_id": msgID,
+	})
+	if err := c.broadcastToSession(chatID, outMsg); err != nil {
+		return "", err
+	}
+	return msgID, nil
+}
+
 // broadcastToSession sends a message to all connections with a matching session.
 func (c *PicoChannel) broadcastToSession(chatID string, msg PicoMessage) error {
 	// chatID format: "pico:<sessionID>"

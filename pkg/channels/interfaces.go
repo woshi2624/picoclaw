@@ -50,3 +50,9 @@ type PlaceholderRecorder interface {
 type CommandRegistrarCapable interface {
 	RegisterCommands(ctx context.Context, defs []commands.Definition) error
 }
+
+// StreamSource — channels that can create an empty placeholder message for streaming into.
+// The returned messageID can be passed to MessageEditor.EditMessage to push incremental tokens.
+type StreamSource interface {
+	CreateStreamingMessage(ctx context.Context, chatID string) (messageID string, err error)
+}
