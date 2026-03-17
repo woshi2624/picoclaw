@@ -11,6 +11,7 @@ import { TypingIndicator } from "@/components/chat/typing-indicator"
 import { UserMessage } from "@/components/chat/user-message"
 import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
+import { getSessions } from "@/api/sessions"
 import { useChatModels } from "@/hooks/use-chat-models"
 import { useGateway } from "@/hooks/use-gateway"
 import { usePicoChat } from "@/hooks/use-pico-chat"
@@ -48,6 +49,23 @@ export function ChatPage() {
       activeSessionId,
       onDeletedActiveSession: newChat,
     })
+
+  // On mount, auto-switch to the most recent session if one exists
+  const hasAutoSwitchedRef = useRef(false)
+  useEffect(() => {
+    void (async () => {
+      try {
+        const data = await getSessions(0, 1)
+        if (data.length > 0 && !hasAutoSwitchedRef.current) {
+          hasAutoSwitchedRef.current = true
+          await switchSession(data[0].id)
+        }
+      } catch {
+        // silently fail, stay on new chat
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop, scrollHeight, clientHeight } = e.currentTarget
