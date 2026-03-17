@@ -44,6 +44,7 @@ type AgentLoop struct {
 	state          *state.Manager
 	running        atomic.Bool
 	summarizing    sync.Map
+	sessionLocks   sync.Map // sessionKey → *sync.Mutex; serializes messages within same session
 	fallback       *providers.FallbackChain
 	channelManager *channels.Manager
 	mediaStore     media.MediaStore
@@ -361,6 +362,11 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 		}
 	}
 
+	// maxConcurrentMessages limits how many messages are processed simultaneously.
+	// This prevents LLM API overload while still allowing parallel processing across sessions.
+	const maxConcurrentMessages = 20
+	sem := make(chan struct{}, maxConcurrentMessages)
+
 	for al.running.Load() {
 		select {
 		case <-ctx.Done():
@@ -371,65 +377,142 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				continue
 			}
 
-			// Process message
-			func() {
-				// TODO: Re-enable media cleanup after inbound media is properly consumed by the agent.
-				// Currently disabled because files are deleted before the LLM can access their content.
-				// defer func() {
-				// 	if al.mediaStore != nil && msg.MediaScope != "" {
-				// 		if releaseErr := al.mediaStore.ReleaseAll(msg.MediaScope); releaseErr != nil {
-				// 			logger.WarnCF("agent", "Failed to release media", map[string]any{
-				// 				"scope": msg.MediaScope,
-				// 				"error": releaseErr.Error(),
-				// 			})
-				// 		}
-				// 	}
-				// }()
+			// Determine session key to serialize messages within the same conversation.
+			// Messages from different sessions (different users/channels) run concurrently;
+			// messages within the same session are processed in order.
+			sessionKey := al.sessionKeyForMsg(msg)
 
-				response, err := al.processMessage(ctx, msg)
-				if err != nil {
-					response = fmt.Sprintf("Error processing message: %v", err)
-				}
+			sem <- struct{}{} // acquire concurrency slot (blocks if at capacity)
+			go func(msg bus.InboundMessage, sessionKey string) {
+				defer func() { <-sem }()
 
-				if response != "" {
-					// Check if the message tool already sent a response during this round.
-					// If so, skip publishing to avoid duplicate messages to the user.
-					// Use default agent's tools to check (message tool is shared).
-					alreadySent := false
-					defaultAgent := al.registry.GetDefaultAgent()
-					if defaultAgent != nil {
-						if tool, ok := defaultAgent.Tools.Get("message"); ok {
-							if mt, ok := tool.(*tools.MessageTool); ok {
-								alreadySent = mt.HasSentInRound()
-							}
-						}
-					}
+				// Acquire per-session lock so the same conversation is not processed
+				// concurrently (avoids session history race conditions).
+				lockI, _ := al.sessionLocks.LoadOrStore(sessionKey, &sync.Mutex{})
+				lock := lockI.(*sync.Mutex)
+				lock.Lock()
+				defer lock.Unlock()
 
-					if !alreadySent {
-						al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-							Channel: msg.Channel,
-							ChatID:  msg.ChatID,
-							Content: response,
-						})
-						logger.InfoCF("agent", "Published outbound response",
-							map[string]any{
-								"channel":     msg.Channel,
-								"chat_id":     msg.ChatID,
-								"content_len": len(response),
-							})
-					} else {
-						logger.DebugCF(
-							"agent",
-							"Skipped outbound (message tool already sent)",
-							map[string]any{"channel": msg.Channel},
-						)
-					}
-				}
-			}()
+				al.processAndPublish(ctx, msg)
+			}(msg, sessionKey)
 		}
 	}
 
 	return nil
+}
+
+// sessionKeyForMsg resolves the session key for a message without full routing,
+// used to determine which per-session lock to acquire before processing.
+func (al *AgentLoop) sessionKeyForMsg(msg bus.InboundMessage) string {
+	route, _, err := al.resolveMessageRoute(msg)
+	if err != nil {
+		// Fallback: use channel+chatID as a unique-enough key
+		return fmt.Sprintf("%s:%s", msg.Channel, msg.ChatID)
+	}
+	return resolveScopeKey(route, msg.SessionKey)
+}
+
+// processAndPublish processes a message and publishes the response to the outbound bus.
+// It is called from a goroutine in Run and holds the per-session lock.
+func (al *AgentLoop) processAndPublish(ctx context.Context, msg bus.InboundMessage) {
+	// TODO: Re-enable media cleanup after inbound media is properly consumed by the agent.
+	// Currently disabled because files are deleted before the LLM can access their content.
+	// defer func() {
+	// 	if al.mediaStore != nil && msg.MediaScope != "" {
+	// 		if releaseErr := al.mediaStore.ReleaseAll(msg.MediaScope); releaseErr != nil {
+	// 			logger.WarnCF("agent", "Failed to release media", map[string]any{
+	// 				"scope": msg.MediaScope,
+	// 				"error": releaseErr.Error(),
+	// 			})
+	// 		}
+	// 	}
+	// }()
+
+	// For Pico (web) messages: capture the previous external channel before processMessage
+	// overwrites the state via RecordLastChannel. This lets us mirror the response to
+	// the external channel (e.g., Feishu) where the user was last active.
+	var prevExternalChannel string
+	if msg.Channel == "pico" && al.state != nil {
+		prevExternalChannel = al.state.GetLastChannel()
+		// Only mirror to genuinely external (non-pico) channels.
+		if prevExternalChannel != "" {
+			if idx := strings.Index(prevExternalChannel, ":"); idx <= 0 || prevExternalChannel[:idx] == "pico" {
+				prevExternalChannel = ""
+			}
+		}
+	}
+
+	// Pre-configure MessageTool to also forward sends to the external channel.
+	if prevExternalChannel != "" {
+		al.setMessageToolMirror(msg.ChatID, prevExternalChannel)
+	}
+
+	response, err := al.processMessage(ctx, msg)
+	if err != nil {
+		response = fmt.Sprintf("Error processing message: %v", err)
+	}
+
+	if response != "" {
+		// Check if the message tool already sent a response during this round.
+		// If so, skip publishing to avoid duplicate messages to the user.
+		// Use default agent's tools to check (message tool is shared, keyed by chatID).
+		alreadySent := false
+		defaultAgent := al.registry.GetDefaultAgent()
+		if defaultAgent != nil {
+			if tool, ok := defaultAgent.Tools.Get("message"); ok {
+				if mt, ok := tool.(*tools.MessageTool); ok {
+					alreadySent = mt.HasSentInRound(msg.ChatID)
+				}
+			}
+		}
+
+		if !alreadySent {
+			al.bus.PublishOutbound(ctx, bus.OutboundMessage{
+				Channel: msg.Channel,
+				ChatID:  msg.ChatID,
+				Content: response,
+			})
+			logger.InfoCF("agent", "Published outbound response",
+				map[string]any{
+					"channel":     msg.Channel,
+					"chat_id":     msg.ChatID,
+					"content_len": len(response),
+				})
+
+			// Mirror web (Pico) responses to the last external channel.
+			if prevExternalChannel != "" {
+				if idx := strings.Index(prevExternalChannel, ":"); idx > 0 {
+					pubCtx, pubCancel := context.WithTimeout(ctx, 5*time.Second)
+					_ = al.bus.PublishOutbound(pubCtx, bus.OutboundMessage{
+						Channel: prevExternalChannel[:idx],
+						ChatID:  prevExternalChannel[idx+1:],
+						Content: response,
+					})
+					pubCancel()
+				}
+			}
+		} else {
+			logger.DebugCF(
+				"agent",
+				"Skipped outbound (message tool already sent)",
+				map[string]any{"channel": msg.Channel},
+			)
+		}
+	}
+}
+
+// setMessageToolMirror configures the MessageTool to mirror sends for chatID to mirrorTo.
+// mirrorTo is in "channel:chatID" format. Pass "" to clear.
+func (al *AgentLoop) setMessageToolMirror(chatID, mirrorTo string) {
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		return
+	}
+	if tool, ok := agent.Tools.Get("message"); ok {
+		if mt, ok := tool.(*tools.MessageTool); ok {
+			mt.SetMirrorChannel(chatID, mirrorTo)
+		}
+	}
 }
 
 func (al *AgentLoop) Stop() {
@@ -648,8 +731,8 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 
 	// Reset message-tool state for this round so we don't skip publishing due to a previous round.
 	if tool, ok := agent.Tools.Get("message"); ok {
-		if resetter, ok := tool.(interface{ ResetSentInRound() }); ok {
-			resetter.ResetSentInRound()
+		if resetter, ok := tool.(interface{ ResetSentInRound(chatID string) }); ok {
+			resetter.ResetSentInRound(msg.ChatID)
 		}
 	}
 

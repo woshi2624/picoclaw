@@ -81,6 +81,7 @@ export function useSessionHistory({
         }
       } catch (err) {
         console.error("Failed to delete session:", err)
+        alert("删除失败，请重试")
       }
     },
     [activeSessionId, onDeletedActiveSession],

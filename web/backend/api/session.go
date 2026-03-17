@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 // registerSessionRoutes binds session list and detail endpoints to the ServeMux.
 func (h *Handler) registerSessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sessions", h.handleListSessions)
+	mux.HandleFunc("GET /api/sessions/{id}/events", h.handleSessionEvents)
 	mux.HandleFunc("GET /api/sessions/{id}", h.handleGetSession)
 	mux.HandleFunc("DELETE /api/sessions/{id}", h.handleDeleteSession)
 }
@@ -35,6 +37,7 @@ type sessionMeta struct {
 // sessionListItem is a lightweight summary returned by GET /api/sessions.
 type sessionListItem struct {
 	ID           string `json:"id"`
+	Channel      string `json:"channel"`
 	Preview      string `json:"preview"`
 	MessageCount int    `json:"message_count"`
 	Created      string `json:"created"`
@@ -59,6 +62,36 @@ func extractPicoSessionID(key string) (string, bool) {
 		return strings.TrimPrefix(key, picoSessionPrefix), true
 	}
 	return "", false
+}
+
+// sessionIDFromKey returns the session ID used in the API.
+// For Pico sessions the short UUID is returned for WebSocket compatibility.
+// For all other channels the full session key is returned.
+func sessionIDFromKey(key string) string {
+	if uuid, ok := extractPicoSessionID(key); ok {
+		return uuid
+	}
+	return key
+}
+
+// extractChannelFromKey returns the channel name from a session key.
+// Session keys follow the format: agent:<agentID>:<channel>:<rest>
+func extractChannelFromKey(key string) string {
+	parts := strings.SplitN(key, ":", 4)
+	if len(parts) >= 3 {
+		return parts[2]
+	}
+	return ""
+}
+
+// sessionKeyFromID resolves the full on-disk session key from an API session ID.
+// If the ID contains a colon it is already a full key; otherwise it is treated
+// as a Pico UUID and the picoSessionPrefix is prepended.
+func sessionKeyFromID(id string) string {
+	if strings.Contains(id, ":") {
+		return id
+	}
+	return picoSessionPrefix + id
 }
 
 // sanitizeSessionKey converts a session key to the filename base used on disk.
@@ -180,11 +213,15 @@ func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Only include Pico channel sessions
-		sessionID, ok := extractPicoSessionID(meta.Key)
-		if !ok {
+		// Skip the internal heartbeat pseudo-session.
+		if meta.Key == "heartbeat" {
 			continue
 		}
+
+		// Derive a stable API ID and channel name from the session key.
+		// Pico sessions keep the short UUID; all other channels use the full key.
+		sessionID := sessionIDFromKey(meta.Key)
+		channel := extractChannelFromKey(meta.Key)
 
 		// Read messages from the .jsonl file for preview and count
 		base := strings.TrimSuffix(entry.Name(), ".meta.json")
@@ -214,6 +251,7 @@ func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
 
 		items = append(items, sessionListItem{
 			ID:           sessionID,
+			Channel:      channel,
 			Preview:      preview,
 			MessageCount: validMessageCount,
 			Created:      meta.CreatedAt.Format(time.RFC3339),
@@ -273,7 +311,7 @@ func (h *Handler) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reconstruct file base from session key
-	base := sanitizeSessionKey(picoSessionPrefix + sessionID)
+	base := sanitizeSessionKey(sessionKeyFromID(sessionID))
 	metaPath := filepath.Join(dir, base+".meta.json")
 	jsonlPath := filepath.Join(dir, base+".jsonl")
 
@@ -323,6 +361,130 @@ func (h *Handler) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleSessionEvents streams new messages for a session via Server-Sent Events.
+// The frontend passes ?skip=N to start after N already-loaded messages.
+// A "typing" custom event is pushed when the session tail is a user message
+// (agent is still processing) and cleared when the assistant reply arrives.
+//
+//	GET /api/sessions/{id}/events?skip=N
+func (h *Handler) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("id")
+	if sessionID == "" {
+		http.Error(w, "missing session id", http.StatusBadRequest)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		return
+	}
+
+	skipStr := r.URL.Query().Get("skip")
+	seenCount := 0
+	if n, err := strconv.Atoi(skipStr); err == nil && n > 0 {
+		seenCount = n
+	}
+
+	dir, err := h.sessionsDir()
+	if err != nil {
+		http.Error(w, "failed to resolve sessions directory", http.StatusInternalServerError)
+		return
+	}
+
+	base := sanitizeSessionKey(sessionKeyFromID(sessionID))
+	metaPath := filepath.Join(dir, base+".meta.json")
+	jsonlPath := filepath.Join(dir, base+".jsonl")
+
+	metaData, err := os.ReadFile(metaPath)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	var meta sessionMeta
+	if err := json.Unmarshal(metaData, &meta); err != nil {
+		http.Error(w, "failed to parse session metadata", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	type sessionMessage struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+
+	prevTyping := false
+
+	poll := func() {
+		msgs, err := readJSONLMessages(jsonlPath, meta.Skip)
+		if err != nil {
+			return
+		}
+
+		var valid []sessionMessage
+		for _, msg := range msgs {
+			if (msg.Role == "user" || msg.Role == "assistant") && strings.TrimSpace(msg.Content) != "" {
+				valid = append(valid, sessionMessage{Role: msg.Role, Content: msg.Content})
+			}
+		}
+
+		// Push any new messages
+		flushed := false
+		for i := seenCount; i < len(valid); i++ {
+			data, merr := json.Marshal(valid[i])
+			if merr != nil {
+				continue
+			}
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flushed = true
+		}
+		if len(valid) > seenCount {
+			seenCount = len(valid)
+		}
+
+		// Push typing state change when it flips
+		isTyping := len(valid) > 0 && valid[len(valid)-1].Role == "user"
+		if isTyping != prevTyping {
+			prevTyping = isTyping
+			typingVal := "false"
+			if isTyping {
+				typingVal = "true"
+			}
+			fmt.Fprintf(w, "event: typing\ndata: %s\n\n", typingVal)
+			flushed = true
+		}
+
+		if flushed {
+			flusher.Flush()
+		}
+	}
+
+	// Send initial delta immediately (handles messages that arrived between
+	// getSessionHistory and the SSE subscription being established).
+	poll()
+
+	ticker := time.NewTicker(time.Second)
+	keepalive := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	defer keepalive.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-keepalive.C:
+			fmt.Fprintf(w, ": keepalive\n\n")
+			flusher.Flush()
+		case <-ticker.C:
+			poll()
+		}
+	}
+}
+
 // handleDeleteSession deletes a specific session (both .jsonl and .meta.json files).
 //
 //	DELETE /api/sessions/{id}
@@ -339,7 +501,7 @@ func (h *Handler) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	base := sanitizeSessionKey(picoSessionPrefix + sessionID)
+	base := sanitizeSessionKey(sessionKeyFromID(sessionID))
 	metaPath := filepath.Join(dir, base+".meta.json")
 	jsonlPath := filepath.Join(dir, base+".jsonl")
 

@@ -23,6 +23,24 @@ interface SessionHistoryMenuProps {
   onDeleteSession: (sessionId: string) => void
 }
 
+const CHANNEL_LABELS: Record<string, string> = {
+  pico: "Web",
+  feishu: "飞书",
+  dingtalk: "钉钉",
+  wecom: "企业微信",
+  wecom_aibot: "企业微信",
+  wecom_app: "企业微信",
+  telegram: "Telegram",
+  line: "LINE",
+  discord: "Discord",
+  whatsapp: "WhatsApp",
+  slack: "Slack",
+}
+
+function channelLabel(channel: string): string {
+  return CHANNEL_LABELS[channel] ?? channel
+}
+
 export function SessionHistoryMenu({
   sessions,
   activeSessionId,
@@ -59,9 +77,16 @@ export function SessionHistoryMenu({
                 }`}
                 onClick={() => onSwitchSession(session.id)}
               >
-                <span className="line-clamp-1 text-sm font-medium">
-                  {session.preview}
-                </span>
+                <div className="flex w-full items-center gap-1.5">
+                  {session.channel && session.channel !== "pico" && (
+                    <span className="bg-muted text-muted-foreground shrink-0 rounded px-1 py-0.5 text-[10px] font-medium leading-none">
+                      {channelLabel(session.channel)}
+                    </span>
+                  )}
+                  <span className="line-clamp-1 text-sm font-medium">
+                    {session.preview}
+                  </span>
+                </div>
                 <span className="text-muted-foreground text-xs">
                   {t("chat.messagesCount", {
                     count: session.message_count,

@@ -5,6 +5,7 @@
 
 用法：
     python3 fetch_data.py --symbol 000001 --market stock | python3 analyze.py
+    python3 fetch_data.py --symbol 000001 --market stock --period 5min --bars 200 | python3 analyze.py --timeframe 5min
     python3 analyze.py --risk-ratio 3.0 --atr-multiplier 2.0 < data.csv
 """
 
@@ -16,13 +17,27 @@ import pandas as pd
 
 
 # ============================================================
+# Timeframe configuration
+# ============================================================
+
+# MA periods and the "warmup" column to require after dropna
+TIMEFRAME_CONFIG = {
+    "daily":  {"ma_periods": [5, 10, 20, 60], "warmup_col": "MA60"},
+    "weekly": {"ma_periods": [5, 10, 20, 60], "warmup_col": "MA60"},
+    "60min":  {"ma_periods": [10, 20, 60],    "warmup_col": "MA60"},
+    "30min":  {"ma_periods": [10, 20, 60],    "warmup_col": "MA60"},
+    "15min":  {"ma_periods": [10, 20, 60],    "warmup_col": "MA60"},
+    "5min":   {"ma_periods": [5, 20, 60],     "warmup_col": "MA60"},
+    "1min":   {"ma_periods": [5, 20],         "warmup_col": "MA20"},
+}
+
+
+# ============================================================
 # 技术指标计算
 # ============================================================
 
-def calc_ma(df: pd.DataFrame, periods: list[int] = None) -> pd.DataFrame:
+def calc_ma(df: pd.DataFrame, periods: list) -> pd.DataFrame:
     """计算移动平均线"""
-    if periods is None:
-        periods = [5, 10, 20, 60]
     for p in periods:
         df[f"MA{p}"] = df["close"].rolling(window=p).mean()
     return df
@@ -87,28 +102,36 @@ def calc_atr(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
 # 信号评分
 # ============================================================
 
-def evaluate_signals(df: pd.DataFrame) -> dict:
+def evaluate_signals(df: pd.DataFrame, ma_periods: list) -> dict:
     """基于最新数据计算综合交易信号"""
     latest = df.iloc[-1]
     prev = df.iloc[-2]
 
     signals = {}
-    score = 0.0  # 正分看多，负分看空
+    score = 0.0
 
     # --- MA 均线信号 (权重 25%) ---
+    # Use the two most-common MA columns available: smallest and ~20-period
+    short_ma = f"MA{ma_periods[0]}"
+    # Pick a medium MA (~20): find closest to 20 among available periods
+    medium_ma = f"MA{min(ma_periods, key=lambda p: abs(p - 20))}"
+
     ma_score = 0
-    if latest["MA5"] > latest["MA20"]:
+    if latest[short_ma] > latest[medium_ma]:
         ma_score += 1
-    elif latest["MA5"] < latest["MA20"]:
+    elif latest[short_ma] < latest[medium_ma]:
         ma_score -= 1
 
-    # 金叉死叉判定
-    if prev["MA5"] <= prev["MA20"] and latest["MA5"] > latest["MA20"]:
-        ma_score += 1  # 金叉
-    elif prev["MA5"] >= prev["MA20"] and latest["MA5"] < latest["MA20"]:
-        ma_score -= 1  # 死叉
+    if prev[short_ma] <= prev[medium_ma] and latest[short_ma] > latest[medium_ma]:
+        ma_score += 1
+    elif prev[short_ma] >= prev[medium_ma] and latest[short_ma] < latest[medium_ma]:
+        ma_score -= 1
 
-    signals["MA"] = {"score": ma_score, "MA5": round(latest["MA5"], 2), "MA20": round(latest["MA20"], 2)}
+    signals["MA"] = {
+        "score": ma_score,
+        short_ma: round(latest[short_ma], 2),
+        medium_ma: round(latest[medium_ma], 2),
+    }
     score += ma_score * 0.25
 
     # --- MACD 信号 (权重 25%) ---
@@ -119,9 +142,9 @@ def evaluate_signals(df: pd.DataFrame) -> dict:
         macd_score -= 1
 
     if prev["DIF"] <= prev["DEA"] and latest["DIF"] > latest["DEA"]:
-        macd_score += 1  # 金叉
+        macd_score += 1
     elif prev["DIF"] >= prev["DEA"] and latest["DIF"] < latest["DEA"]:
-        macd_score -= 1  # 死叉
+        macd_score -= 1
 
     signals["MACD"] = {"score": macd_score, "DIF": round(latest["DIF"], 4), "DEA": round(latest["DEA"], 4)}
     score += macd_score * 0.25
@@ -130,9 +153,9 @@ def evaluate_signals(df: pd.DataFrame) -> dict:
     rsi_score = 0
     rsi_val = latest["RSI"]
     if rsi_val < 30:
-        rsi_score = 1  # 超卖，看多
+        rsi_score = 1
     elif rsi_val > 70:
-        rsi_score = -1  # 超买，看空
+        rsi_score = -1
     elif rsi_val < 50:
         rsi_score = 0.5
     else:
@@ -144,21 +167,25 @@ def evaluate_signals(df: pd.DataFrame) -> dict:
     # --- KDJ 信号 (权重 15%) ---
     kdj_score = 0
     if prev["K"] <= prev["D"] and latest["K"] > latest["D"]:
-        kdj_score = 1  # 金叉
+        kdj_score = 1
     elif prev["K"] >= prev["D"] and latest["K"] < latest["D"]:
-        kdj_score = -1  # 死叉
+        kdj_score = -1
     elif latest["K"] > latest["D"]:
         kdj_score = 0.5
     else:
         kdj_score = -0.5
 
-    # 超买超卖区域加权
     if latest["J"] < 20:
         kdj_score += 0.5
     elif latest["J"] > 80:
         kdj_score -= 0.5
 
-    signals["KDJ"] = {"score": kdj_score, "K": round(latest["K"], 2), "D": round(latest["D"], 2), "J": round(latest["J"], 2)}
+    signals["KDJ"] = {
+        "score": kdj_score,
+        "K": round(latest["K"], 2),
+        "D": round(latest["D"], 2),
+        "J": round(latest["J"], 2),
+    }
     score += kdj_score * 0.15
 
     # --- 布林带信号 (权重 15%) ---
@@ -172,9 +199,9 @@ def evaluate_signals(df: pd.DataFrame) -> dict:
     if boll_width > 0:
         position = (close - boll_dn) / boll_width
         if position < 0.2:
-            boll_score = 1  # 触及下轨，看多
+            boll_score = 1
         elif position > 0.8:
-            boll_score = -1  # 触及上轨，看空
+            boll_score = -1
         elif close > boll_mid:
             boll_score = -0.3
         else:
@@ -194,7 +221,7 @@ def evaluate_signals(df: pd.DataFrame) -> dict:
 def backtest_win_rate(df: pd.DataFrame, direction: str, lookback: int = 60) -> float:
     """
     简化的历史回测胜率估算。
-    检查过去 lookback 天内，同方向持有 N 天后的盈利概率。
+    检查过去 lookback 根 K线内，同方向持有 5 根后的盈利概率。
     """
     if len(df) < lookback + 5:
         lookback = max(len(df) - 5, 10)
@@ -205,7 +232,7 @@ def backtest_win_rate(df: pd.DataFrame, direction: str, lookback: int = 60) -> f
 
     for i in range(len(recent) - 5):
         entry_price = recent.iloc[i]["close"]
-        exit_price = recent.iloc[i + 5]["close"]  # 持有5天
+        exit_price = recent.iloc[i + 5]["close"]
 
         if direction == "做多":
             if exit_price > entry_price:
@@ -222,16 +249,16 @@ def backtest_win_rate(df: pd.DataFrame, direction: str, lookback: int = 60) -> f
 # 交易建议生成
 # ============================================================
 
-def generate_advice(df: pd.DataFrame, risk_ratio: float, atr_multiplier: float) -> dict:
+def generate_advice(df: pd.DataFrame, risk_ratio: float, atr_multiplier: float,
+                    ma_periods: list) -> dict:
     """生成完整的交易建议"""
     latest = df.iloc[-1]
     current_price = float(latest["close"])
     atr = float(latest["ATR"])
 
-    signal_result = evaluate_signals(df)
+    signal_result = evaluate_signals(df, ma_periods)
     total_score = signal_result["total_score"]
 
-    # 判定方向
     if total_score > 0.15:
         direction = "做多"
         confidence = "强" if total_score > 0.5 else "中" if total_score > 0.3 else "弱"
@@ -248,10 +275,8 @@ def generate_advice(df: pd.DataFrame, risk_ratio: float, atr_multiplier: float) 
         stop_loss = None
         take_profit = None
 
-    # 胜率回测
     win_rate = backtest_win_rate(df, direction) if direction != "观望" else None
 
-    # 组装结果
     result = {
         "交易建议": {
             "方向": direction,
@@ -284,9 +309,18 @@ def main():
     parser = argparse.ArgumentParser(description="技术分析 + 交易建议")
     parser.add_argument("--risk-ratio", type=float, default=2.0, help="盈亏比（默认 2.0）")
     parser.add_argument("--atr-multiplier", type=float, default=1.5, help="ATR 止损倍数（默认 1.5）")
+    parser.add_argument(
+        "--timeframe",
+        default="daily",
+        choices=list(TIMEFRAME_CONFIG.keys()),
+        help="K线时间框架，影响 MA 周期自适应（默认 daily）",
+    )
     args = parser.parse_args()
 
-    # 从 stdin 读取 CSV
+    tf_cfg = TIMEFRAME_CONFIG[args.timeframe]
+    ma_periods = tf_cfg["ma_periods"]
+    warmup_col = tf_cfg["warmup_col"]
+
     try:
         df = pd.read_csv(sys.stdin)
     except Exception as e:
@@ -297,32 +331,29 @@ def main():
         print("错误: 数据不足，至少需要 30 条K线数据", file=sys.stderr)
         sys.exit(1)
 
-    # 确保数值类型
     for col in ["open", "close", "high", "low", "volume"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df = df.dropna(subset=["close", "high", "low"])
 
-    # 计算所有技术指标
-    df = calc_ma(df)
+    # Compute all indicators
+    df = calc_ma(df, ma_periods)
     df = calc_macd(df)
     df = calc_rsi(df)
     df = calc_kdj(df)
     df = calc_boll(df)
     df = calc_atr(df)
 
-    # 丢弃 NaN 行（指标需要预热期）
-    df = df.dropna(subset=["MA60", "DEA", "RSI", "K", "BOLL_MID", "ATR"])
+    # Drop warmup rows using the slowest MA for this timeframe
+    df = df.dropna(subset=[warmup_col, "DEA", "RSI", "K", "BOLL_MID", "ATR"])
 
     if df.empty or len(df) < 2:
-        print("错误: 有效数据不足，请增加 --days 参数", file=sys.stderr)
+        print(f"错误: 有效数据不足，请增加 --days / --bars 参数（当前 timeframe: {args.timeframe}）",
+              file=sys.stderr)
         sys.exit(1)
 
-    # 生成交易建议
-    advice = generate_advice(df, args.risk_ratio, args.atr_multiplier)
-
-    # 输出 JSON
+    advice = generate_advice(df, args.risk_ratio, args.atr_multiplier, ma_periods)
     print(json.dumps(advice, ensure_ascii=False, indent=2))
 
 

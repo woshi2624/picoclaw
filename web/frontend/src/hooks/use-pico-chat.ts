@@ -112,6 +112,8 @@ export function usePicoChat() {
   const isConnectingRef = useRef(false)
   const msgIdCounter = useRef(0)
   const activeSessionIdRef = useRef(activeSessionId)
+  // SSE connection for external (non-Pico) sessions
+  const externalSseRef = useRef<EventSource | null>(null)
 
   // Keep ref in sync
   useEffect(() => {
@@ -268,6 +270,14 @@ export function usePicoChat() {
     isConnectingRef.current = false
   }, [])
 
+  // Close any open SSE connection for external sessions.
+  const disconnectExternalSse = useCallback(() => {
+    if (externalSseRef.current) {
+      externalSseRef.current.close()
+      externalSseRef.current = null
+    }
+  }, [])
+
   // Auto connect/disconnect based on gateway state
   useEffect(() => {
     // Wrap in setTimeout to avoid React calling setState synchronously during render
@@ -284,8 +294,11 @@ export function usePicoChat() {
 
   // Cleanup on unmount
   useEffect(() => {
-    return () => disconnect()
-  }, [disconnect])
+    return () => {
+      disconnect()
+      disconnectExternalSse()
+    }
+  }, [disconnect, disconnectExternalSse])
 
   const sendMessage = useCallback((content: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
@@ -317,11 +330,19 @@ export function usePicoChat() {
   // Switch to a historical session
   const switchSession = useCallback(
     async (sessionId: string) => {
-      // Disconnect current WebSocket
-      disconnect()
+      // Always close any open external SSE first.
+      disconnectExternalSse()
 
-      // Set new session ID
-      setActiveSessionId(sessionId)
+      // Non-Pico sessions (full key containing ':') are external-channel sessions
+      // (e.g. Feishu, DingTalk). For those we only load history for display;
+      // the WebSocket stays on the current Pico session so new messages still work.
+      const isExternalSession = sessionId.includes(":")
+
+      if (!isExternalSession) {
+        // Pico session: disconnect so we can reconnect with the new session UUID.
+        disconnect()
+        setActiveSessionId(sessionId)
+      }
       setIsTyping(false)
 
       // Load history from backend
@@ -340,20 +361,58 @@ export function usePicoChat() {
             timestamp: fallbackTime,
           })),
         )
+
+        // Subscribe to real-time updates for external sessions via SSE.
+        // Pass ?skip=N so the backend only sends messages that arrived after
+        // the history snapshot we just loaded.
+        if (isExternalSession) {
+          const skip = detail.messages.length
+          const es = new EventSource(
+            `/api/sessions/${encodeURIComponent(sessionId)}/events?skip=${skip}`,
+          )
+
+          es.onmessage = (event) => {
+            try {
+              const msg = JSON.parse(event.data) as {
+                role: "user" | "assistant"
+                content: string
+              }
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: `sse-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                  role: msg.role,
+                  content: msg.content,
+                  timestamp: Date.now(),
+                },
+              ])
+            } catch {
+              // ignore malformed events
+            }
+          }
+
+          es.addEventListener("typing", (e) => {
+            setIsTyping((e as MessageEvent).data === "true")
+          })
+
+          externalSseRef.current = es
+        }
       } catch (err) {
         console.error("Failed to load session history:", err)
         setMessages([])
       }
 
-      // Reconnect with new session ID (will use the updated ref)
-      // Small delay to ensure state has settled
-      setTimeout(() => {
-        if (gatewayState === "running") {
-          connect()
-        }
-      }, 100)
+      if (!isExternalSession) {
+        // Reconnect with new session ID (will use the updated ref)
+        // Small delay to ensure state has settled
+        setTimeout(() => {
+          if (gatewayState === "running") {
+            connect()
+          }
+        }, 100)
+      }
     },
-    [disconnect, connect, gatewayState],
+    [disconnect, connect, gatewayState, disconnectExternalSse],
   )
 
   // Start a new empty chat
@@ -362,6 +421,7 @@ export function usePicoChat() {
       return
     }
 
+    disconnectExternalSse()
     disconnect()
     const newId = generateSessionId()
     setActiveSessionId(newId)
@@ -374,7 +434,7 @@ export function usePicoChat() {
         connect()
       }
     }, 100)
-  }, [disconnect, connect, gatewayState, messages.length])
+  }, [disconnect, connect, gatewayState, messages.length, disconnectExternalSse])
 
   return {
     messages,
