@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 type SendCallback func(channel, chatID, content string) error
@@ -122,7 +124,12 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 				mirrorCh := mirrorTo[:idx]
 				mirrorID := mirrorTo[idx+1:]
 				if mirrorCh != channel {
-					_ = t.sendCallback(mirrorCh, mirrorID, content)
+					logger.InfoCF("tools", "mirroring message send",
+						map[string]any{"from_channel": channel, "to_channel": mirrorCh, "to_chat": mirrorID})
+					if err := t.sendCallback(mirrorCh, mirrorID, content); err != nil {
+						logger.WarnCF("tools", "mirror send failed",
+							map[string]any{"channel": mirrorCh, "error": err.Error()})
+					}
 				}
 			}
 		}

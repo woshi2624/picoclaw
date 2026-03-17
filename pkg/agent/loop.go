@@ -429,22 +429,16 @@ func (al *AgentLoop) processAndPublish(ctx context.Context, msg bus.InboundMessa
 	// }()
 
 	// For Pico (web) messages: capture the previous external channel before processMessage
-	// overwrites the state via RecordLastChannel. This lets us mirror the response to
-	// the external channel (e.g., Feishu) where the user was last active.
+	// overwrites the state via RecordLastChannel. Used to mirror the final response if
+	// MessageTool was not used (alreadySent == false).
 	var prevExternalChannel string
 	if msg.Channel == "pico" && al.state != nil {
-		prevExternalChannel = al.state.GetLastChannel()
-		// Only mirror to genuinely external (non-pico) channels.
+		prevExternalChannel = al.state.GetMirrorTarget()
 		if prevExternalChannel != "" {
 			if idx := strings.Index(prevExternalChannel, ":"); idx <= 0 || prevExternalChannel[:idx] == "pico" {
 				prevExternalChannel = ""
 			}
 		}
-	}
-
-	// Pre-configure MessageTool to also forward sends to the external channel.
-	if prevExternalChannel != "" {
-		al.setMessageToolMirror(msg.ChatID, prevExternalChannel)
 	}
 
 	response, err := al.processMessage(ctx, msg)
@@ -730,8 +724,26 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	}
 
 	// Reset message-tool state for this round so we don't skip publishing due to a previous round.
+	// For pico messages, also configure the mirror channel right after the reset so it doesn't
+	// get cleared before the LLM runs.
 	if tool, ok := agent.Tools.Get("message"); ok {
-		if resetter, ok := tool.(interface{ ResetSentInRound(chatID string) }); ok {
+		if mt, ok := tool.(*tools.MessageTool); ok {
+			mt.ResetSentInRound(msg.ChatID)
+			// For pico: forward each send to the last external channel (e.g. Feishu).
+			// Read MirrorTarget (written only by external channels, never overwritten by pico).
+			if msg.Channel == "pico" && al.state != nil {
+				prevExtCh := al.state.GetMirrorTarget()
+				logger.InfoCF("agent", "pico mirror check",
+					map[string]any{"mirror_target": prevExtCh, "chat_id": msg.ChatID})
+				if prevExtCh != "" {
+					if idx := strings.Index(prevExtCh, ":"); idx > 0 && prevExtCh[:idx] != "pico" {
+						mt.SetMirrorChannel(msg.ChatID, prevExtCh)
+						logger.InfoCF("agent", "pico mirror set",
+							map[string]any{"mirror_to": prevExtCh, "chat_id": msg.ChatID})
+					}
+				}
+			}
+		} else if resetter, ok := tool.(interface{ ResetSentInRound(chatID string) }); ok {
 			resetter.ResetSentInRound(msg.ChatID)
 		}
 	}
@@ -879,6 +891,10 @@ func (al *AgentLoop) runAgentLoop(
 					"Failed to record last channel",
 					map[string]any{"error": err.Error()},
 				)
+			}
+			// Persist external channel as mirror target so pico (web) messages can be forwarded.
+			if opts.Channel != "pico" && al.state != nil {
+				_ = al.state.SetMirrorTarget(channelKey)
 			}
 		}
 	}

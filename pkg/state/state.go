@@ -21,6 +21,10 @@ type State struct {
 	// LastChatID is the last chat ID used for communication
 	LastChatID string `json:"last_chat_id,omitempty"`
 
+	// MirrorTarget is the external channel to mirror pico (web) messages to.
+	// Only written by external channels; pico never overwrites this.
+	MirrorTarget string `json:"mirror_target,omitempty"`
+
 	// Timestamp is the last time this state was updated
 	Timestamp time.Time `json:"timestamp"`
 }
@@ -120,6 +124,22 @@ func (sm *Manager) GetLastChatID() string {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return sm.state.LastChatID
+}
+
+// GetMirrorTarget returns the external channel mirror target.
+func (sm *Manager) GetMirrorTarget() string {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.state.MirrorTarget
+}
+
+// SetMirrorTarget atomically updates the mirror target and saves the state.
+func (sm *Manager) SetMirrorTarget(target string) error {
+	sm.mu.Lock()
+	sm.state.MirrorTarget = target
+	sm.state.Timestamp = time.Now()
+	sm.mu.Unlock()
+	return sm.saveAtomic()
 }
 
 // GetTimestamp returns the timestamp of the last state update.
