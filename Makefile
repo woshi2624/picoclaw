@@ -18,6 +18,59 @@ LDFLAGS=-ldflags "-X $(CONFIG_PKG).Version=$(VERSION) -X $(CONFIG_PKG).GitCommit
 GO?=CGO_ENABLED=0 go
 GOFLAGS?=-v -tags stdjson
 
+# macOS .app bundle settings
+DARWIN_APP_NAME=PicoClaw
+DARWIN_BUNDLE_ID=com.sipeed.picoclaw
+DARWIN_ICON_SRC=$(CURDIR)/assets/clawdchat-icon.png
+
+# Create macOS .app bundle; $(1) = platform-arch suffix (e.g. darwin-arm64)
+define CREATE_DARWIN_APP
+	@echo "  Creating $(DARWIN_APP_NAME).app for $(1)..."
+	@rm -rf "$(BUILD_DIR)/$(DARWIN_APP_NAME).app"
+	@mkdir -p "$(BUILD_DIR)/$(DARWIN_APP_NAME).app/Contents/MacOS"
+	@mkdir -p "$(BUILD_DIR)/$(DARWIN_APP_NAME).app/Contents/Resources"
+	@cp "$(BUILD_DIR)/$(BINARY_NAME)-$(1)" "$(BUILD_DIR)/$(DARWIN_APP_NAME).app/Contents/MacOS/$(BINARY_NAME)"
+	@chmod +x "$(BUILD_DIR)/$(DARWIN_APP_NAME).app/Contents/MacOS/$(BINARY_NAME)"
+	@printf '<?xml version="1.0" encoding="UTF-8"?>\n\
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n\
+<plist version="1.0">\n<dict>\n\
+\t<key>CFBundleName</key><string>$(DARWIN_APP_NAME)</string>\n\
+\t<key>CFBundleDisplayName</key><string>$(DARWIN_APP_NAME)</string>\n\
+\t<key>CFBundleIdentifier</key><string>$(DARWIN_BUNDLE_ID)</string>\n\
+\t<key>CFBundleVersion</key><string>$(VERSION)</string>\n\
+\t<key>CFBundleShortVersionString</key><string>$(VERSION)</string>\n\
+\t<key>CFBundlePackageType</key><string>APPL</string>\n\
+\t<key>CFBundleExecutable</key><string>$(BINARY_NAME)</string>\n\
+\t<key>CFBundleIconFile</key><string>AppIcon</string>\n\
+\t<key>LSMinimumSystemVersion</key><string>10.13</string>\n\
+\t<key>NSHighResolutionCapable</key><true/>\n\
+</dict>\n</plist>\n' > "$(BUILD_DIR)/$(DARWIN_APP_NAME).app/Contents/Info.plist"
+	@if command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then \
+		mkdir -p "$(BUILD_DIR)/AppIcon.iconset" && \
+		sips -z 16 16     "$(DARWIN_ICON_SRC)" --out "$(BUILD_DIR)/AppIcon.iconset/icon_16x16.png"      >/dev/null 2>&1 && \
+		sips -z 32 32     "$(DARWIN_ICON_SRC)" --out "$(BUILD_DIR)/AppIcon.iconset/icon_16x16@2x.png"   >/dev/null 2>&1 && \
+		sips -z 32 32     "$(DARWIN_ICON_SRC)" --out "$(BUILD_DIR)/AppIcon.iconset/icon_32x32.png"      >/dev/null 2>&1 && \
+		sips -z 64 64     "$(DARWIN_ICON_SRC)" --out "$(BUILD_DIR)/AppIcon.iconset/icon_32x32@2x.png"   >/dev/null 2>&1 && \
+		sips -z 128 128   "$(DARWIN_ICON_SRC)" --out "$(BUILD_DIR)/AppIcon.iconset/icon_128x128.png"    >/dev/null 2>&1 && \
+		sips -z 256 256   "$(DARWIN_ICON_SRC)" --out "$(BUILD_DIR)/AppIcon.iconset/icon_128x128@2x.png" >/dev/null 2>&1 && \
+		sips -z 256 256   "$(DARWIN_ICON_SRC)" --out "$(BUILD_DIR)/AppIcon.iconset/icon_256x256.png"    >/dev/null 2>&1 && \
+		sips -z 512 512   "$(DARWIN_ICON_SRC)" --out "$(BUILD_DIR)/AppIcon.iconset/icon_256x256@2x.png" >/dev/null 2>&1 && \
+		sips -z 512 512   "$(DARWIN_ICON_SRC)" --out "$(BUILD_DIR)/AppIcon.iconset/icon_512x512.png"    >/dev/null 2>&1 && \
+		sips -z 1024 1024 "$(DARWIN_ICON_SRC)" --out "$(BUILD_DIR)/AppIcon.iconset/icon_512x512@2x.png" >/dev/null 2>&1 && \
+		iconutil -c icns "$(BUILD_DIR)/AppIcon.iconset" --output "$(BUILD_DIR)/$(DARWIN_APP_NAME).app/Contents/Resources/AppIcon.icns" && \
+		rm -rf "$(BUILD_DIR)/AppIcon.iconset" && \
+		echo "  Icon embedded"; \
+	else \
+		echo "  Warning: sips/iconutil not available, skipping icon (macOS only)"; \
+	fi
+	@if command -v codesign >/dev/null 2>&1; then \
+		codesign --force --deep --sign - "$(BUILD_DIR)/$(DARWIN_APP_NAME).app" && \
+		echo "  Ad-hoc signed"; \
+	else \
+		echo "  Warning: codesign not available, app may be blocked by Gatekeeper"; \
+	fi
+endef
+
 # Patch MIPS LE ELF e_flags (offset 36) for NaN2008-only kernels (e.g. Ingenic X2600).
 #
 # Bytes (octal): \004 \024 \000 \160  →  little-endian 0x70001404
@@ -111,6 +164,14 @@ build: generate
 	@echo "Build complete: $(BINARY_PATH)"
 	@ln -sf $(BINARY_NAME)-$(PLATFORM)-$(ARCH) $(BUILD_DIR)/$(BINARY_NAME)
 
+## build-darwin-app: Build and package picoclaw as a macOS .app bundle (darwin only)
+build-darwin-app: generate
+	@echo "Building $(BINARY_NAME) for darwin/arm64..."
+	@mkdir -p $(BUILD_DIR)
+	GOOS=darwin GOARCH=arm64 $(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 ./$(CMD_DIR)
+	$(call CREATE_DARWIN_APP,darwin-arm64)
+	@echo "App bundle: $(BUILD_DIR)/$(DARWIN_APP_NAME).app"
+
 ## build-launcher: Build the picoclaw-launcher (web console) binary
 build-launcher:
 	@echo "Building picoclaw-launcher for $(PLATFORM)/$(ARCH)..."
@@ -182,13 +243,19 @@ build-all: generate
 	GOOS=darwin GOARCH=arm64 $(GO) build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 ./$(CMD_DIR)
 	GOOS=windows GOARCH=amd64 $(GO) build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe ./$(CMD_DIR)
 	@echo "All builds complete. Packaging zip archives..."
-	@for platform in linux-amd64 linux-arm linux-arm64 linux-armv7 linux-loong64 linux-riscv64 linux-mipsle darwin-arm64; do \
+	@for platform in linux-amd64 linux-arm linux-arm64 linux-armv7 linux-loong64 linux-riscv64 linux-mipsle; do \
 		mkdir -p "$(BUILD_DIR)/.stage/$(BINARY_NAME)-$$platform" && \
 		cp "$(BUILD_DIR)/$(BINARY_NAME)-$$platform" "$(BUILD_DIR)/.stage/$(BINARY_NAME)-$$platform/$(BINARY_NAME)" && \
 		(cd "$(BUILD_DIR)/.stage" && zip -r "../$(BINARY_NAME)-$$platform.zip" "$(BINARY_NAME)-$$platform/") && \
 		rm -rf "$(BUILD_DIR)/.stage/$(BINARY_NAME)-$$platform" && \
 		echo "  Packaged: $(BUILD_DIR)/$(BINARY_NAME)-$$platform.zip"; \
 	done
+	$(call CREATE_DARWIN_APP,darwin-arm64)
+	@mkdir -p "$(BUILD_DIR)/.stage"
+	@cp -r "$(BUILD_DIR)/$(DARWIN_APP_NAME).app" "$(BUILD_DIR)/.stage/$(DARWIN_APP_NAME).app"
+	@(cd "$(BUILD_DIR)/.stage" && zip -r "../$(BINARY_NAME)-darwin-arm64.zip" "$(DARWIN_APP_NAME).app/")
+	@rm -rf "$(BUILD_DIR)/.stage/$(DARWIN_APP_NAME).app"
+	@echo "  Packaged: $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64.zip"
 	@mkdir -p "$(BUILD_DIR)/.stage/$(BINARY_NAME)-windows-amd64" && \
 	cp "$(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe" "$(BUILD_DIR)/.stage/$(BINARY_NAME)-windows-amd64/$(BINARY_NAME).exe" && \
 	(cd "$(BUILD_DIR)/.stage" && zip -r "../$(BINARY_NAME)-windows-amd64.zip" "$(BINARY_NAME)-windows-amd64/") && \
